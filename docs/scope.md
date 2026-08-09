@@ -18,7 +18,7 @@ There are rough hand-drawn sketches for the arena screen, the leaderboard, and t
 
 | #   | Feature                                     | Phase      | Status      |
 | --- | ------------------------------------------- | ---------- | ----------- |
-| 1   | Connecting to a model                       | Foundation | in progress |
+| 1   | Connecting to a model                       | Foundation | done        |
 | 2   | Coding standards & tooling                  | Foundation | done        |
 | 3   | Data model                                  | Foundation | done        |
 | 4   | Design & look                               | Foundation | not started |
@@ -67,7 +67,7 @@ Real credentials now in place for everything: `OPENROUTER_API_KEY`, Clerk keys, 
 - [x] Get a real Postgres URL and apply it (see Feature 3)
 - [x] Get remaining real credentials (PostHog project key)
 - [x] Fix `lib/prisma.ts` runtime connection (switched to the direct, non-pooled `DATABASE_URL`)
-- [ ] Write the spec
+- [x] Write the spec (`docs/connecting-to-a-model.md` — request/response contract, gate order, the per-model-vs-shared-stream decision, config wiring)
 
 ### 2. Coding standards & tooling
 
