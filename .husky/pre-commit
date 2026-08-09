@@ -1,0 +1,6 @@
+if [ -d "/c/Windows/System32" ]; then
+  export PATH="$PATH:/c/Windows/System32"
+fi
+
+npx lint-staged
+npx tsc --noEmit

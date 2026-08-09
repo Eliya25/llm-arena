@@ -6,6 +6,12 @@
       "sourceType": "github",
       "skillPath": "arcjet/SKILL.md",
       "computedHash": "95f74fd98488f55dbd174bb46db7f04500ba39d648c62899fd5ac883310448d2"
+    },
+    "frontend-design": {
+      "source": "anthropics/skills",
+      "sourceType": "github",
+      "skillPath": "skills/frontend-design/SKILL.md",
+      "computedHash": "93f53fd1c0352d3d7ec17b8f73d7351bf76f4821e55d123c9d2abc2c53ba48e4"
     }
   }
 }

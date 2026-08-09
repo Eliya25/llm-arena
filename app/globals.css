@@ -1,26 +1,181 @@
 @import "tailwindcss";
+@import "tw-animate-css";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --radius: 0.625rem;
+
+  /* Warm coffee-brown identity — dark is the app's real look. */
+  --background: #22160f;
+  --foreground: #f2e9de;
+
+  --card: #2e1f16;
+  --card-foreground: #f2e9de;
+  --popover: #2e1f16;
+  --popover-foreground: #f2e9de;
+
+  --primary: #e2662a;
+  --primary-foreground: #1a0f09;
+
+  --secondary: #3a2a1e;
+  --secondary-foreground: #f2e9de;
+
+  --muted: #362719;
+  --muted-foreground: #b6a08c;
+
+  --accent: #3f2b1c;
+  --accent-foreground: #f2e9de;
+
+  --destructive: #d93a4a;
+  --destructive-foreground: #f9ece7;
+
+  --border: #4a3527;
+  --input: #4a3527;
+  --ring: #e2662a;
+
+  /* Reserved single-purpose colors — winner only, error only, never decoration. */
+  --win: #4f9a5d;
+  --win-foreground: #0f1c11;
+
+  --chart-1: #e2662a;
+  --chart-2: #4f9a5d;
+  --chart-3: #b6a08c;
+  --chart-4: #d93a4a;
+  --chart-5: #4a3527;
+
+  --sidebar: #1c120c;
+  --sidebar-foreground: #f2e9de;
+  --sidebar-primary: #e2662a;
+  --sidebar-primary-foreground: #1a0f09;
+  --sidebar-accent: #3f2b1c;
+  --sidebar-accent-foreground: #f2e9de;
+  --sidebar-border: #4a3527;
+  --sidebar-ring: #e2662a;
+}
+
+/* Accessible light alternative — same identity, contrast re-checked for a light ground. */
+@media (prefers-color-scheme: light) {
+  :root {
+    --background: #f5eee2;
+    --foreground: #2b1d14;
+
+    --card: #fbf6ec;
+    --card-foreground: #2b1d14;
+    --popover: #fbf6ec;
+    --popover-foreground: #2b1d14;
+
+    --primary: #e2662a;
+    --primary-foreground: #1a0f09;
+
+    --secondary: #eae0ce;
+    --secondary-foreground: #2b1d14;
+
+    --muted: #efe6d6;
+    --muted-foreground: #7a6650;
+
+    --accent: #f3dcc9;
+    --accent-foreground: #2b1d14;
+
+    --destructive: #c1303b;
+    --destructive-foreground: #fbf6ec;
+
+    --border: #d9c9ae;
+    --input: #d9c9ae;
+    --ring: #e2662a;
+
+    --win: #3f7d4b;
+    --win-foreground: #f6fbf3;
+
+    --chart-1: #e2662a;
+    --chart-2: #3f7d4b;
+    --chart-3: #7a6650;
+    --chart-4: #c1303b;
+    --chart-5: #d9c9ae;
+
+    --sidebar: #efe6d6;
+    --sidebar-foreground: #2b1d14;
+    --sidebar-primary: #e2662a;
+    --sidebar-primary-foreground: #1a0f09;
+    --sidebar-accent: #f3dcc9;
+    --sidebar-accent-foreground: #2b1d14;
+    --sidebar-border: #d9c9ae;
+    --sidebar-ring: #e2662a;
+  }
 }
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  /* Rust is the app's one accent — same value as primary, named to match how the design is discussed. */
+  --color-rust: var(--primary);
+  --color-win: var(--win);
+  --color-win-foreground: var(--win-foreground);
+
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+
+  /* Display (Fraunces): the big win-tally numeral and page titles, used sparingly.
+     Sans (Inter): body text. Mono (JetBrains Mono): model slugs, ms, tokens/sec. */
+  --font-display: var(--font-fraunces);
+  --font-sans: var(--font-inter);
+  --font-mono: var(--font-jetbrains-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+
+  body {
+    @apply bg-background font-sans text-foreground;
+  }
+
+  :focus-visible {
+    @apply outline-2 outline-offset-2 outline-ring;
   }
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }
