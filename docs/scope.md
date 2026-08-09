@@ -19,7 +19,7 @@ There are rough hand-drawn sketches for the arena screen, the leaderboard, and t
 | #   | Feature                                     | Phase      | Status      |
 | --- | ------------------------------------------- | ---------- | ----------- |
 | 1   | Connecting to a model                       | Foundation | in progress |
-| 2   | Coding standards & tooling                  | Foundation | not started |
+| 2   | Coding standards & tooling                  | Foundation | done        |
 | 3   | Data model                                  | Foundation | done        |
 | 4   | Design & look                               | Foundation | not started |
 | 5   | Model picker                                | Slice 1    | not started |
@@ -73,8 +73,16 @@ Real credentials now in place for everything: `OPENROUTER_API_KEY`, Clerk keys, 
 
 Write down the real conventions for this project once it actually exists, then install linting, formatting, and a pre-commit hook that actually enforces them.
 
-- [ ] Decide the approach
-- [ ] Install lint, format, and whatever else is needed, and write it up in a coding-standards doc
+**Decided and built:** Prettier (`prettier-plugin-tailwindcss`, sorted against `app/globals.css` since Tailwind v4 here is CSS-first with no `tailwind.config.*`) plus `eslint-config-prettier` so ESLint and Prettier don't fight over style rules. Kept `eslint-config-next` for lint (already brings jsx-a11y for the accessibility-baseline rule) and turned `@typescript-eslint/no-explicit-any` into a hard error, since "strict TypeScript, no `any`" needs an enforced rule, not just a convention. Added `format`, `format:check`, and `typecheck` scripts alongside the existing `lint`. Husky + lint-staged run on every commit: `eslint --fix` + `prettier --write` on staged files, then a full-project `tsc --noEmit` (deliberately whole-project, not staged-only — a one-file commit can still break a type elsewhere). The full repo was reformatted with Prettier as its own standalone commit before the hook was wired in, so the hook's first real run wasn't fighting a repo-wide diff; `.claude/` (vendored skill content) was excluded from that reformat.
+
+**Fixed:** the pre-commit hook initially failed to actually run eslint/prettier at all — `cmd.exe` itself couldn't be spawned (`ENOENT`) because the invoking shell's `PATH` didn't include `C:\Windows\System32`, which Windows needs to execute the `.cmd` shims lint-staged spawns. The hook was silently "passing" for the wrong reason (nothing ran) before this was caught. Fixed by having `.husky/pre-commit` defensively add `C:\Windows\System32` to `PATH` itself, so it doesn't depend on the caller's shell having it. Verified both directions with throwaway commits: a file with an explicit `any` was correctly blocked with the real ESLint error, and a clean file committed successfully — both test commits were then removed.
+
+Conventions written up in `docs/coding-standards.md`: naming/folder-by-feature structure, functional-style rules, TypeScript/`any` policy, error-handling shape, styling/shared-values rule, import rules, and the exact commands to run before calling anything done.
+
+Verified: `tsc --noEmit`, `eslint .`, `prettier --check .`, and `next build` all pass clean.
+
+- [x] Decide the approach
+- [x] Install lint, format, and whatever else is needed, and write it up in a coding-standards doc
 
 ### 3. Data model
 
