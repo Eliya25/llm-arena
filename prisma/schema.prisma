@@ -1,0 +1,63 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../lib/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model User {
+  id        String   @id @default(cuid())
+  clerkId   String   @unique
+  createdAt DateTime @default(now())
+  threads   Thread[]
+}
+
+model Thread {
+  id        String   @id @default(cuid())
+  userId    String
+  title     String
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id])
+  turns     Turn[]
+}
+
+model Turn {
+  id        String    @id @default(cuid())
+  threadId  String
+  prompt    String
+  createdAt DateTime  @default(now())
+  messages  Message[]
+  thread    Thread    @relation(fields: [threadId], references: [id])
+  vote      Vote?
+}
+
+model Message {
+  id                 String        @id @default(cuid())
+  turnId             String
+  model              String
+  content            String
+  status             MessageStatus @default(PENDING)
+  timeToFirstTokenMs Int?
+  tokensPerSecond    Float?
+  totalTokens        Int?
+  createdAt          DateTime      @default(now())
+  turn               Turn          @relation(fields: [turnId], references: [id])
+  votes              Vote[]
+}
+
+model Vote {
+  id        String   @id @default(cuid())
+  turnId    String   @unique
+  messageId String
+  createdAt DateTime @default(now())
+  message   Message  @relation(fields: [messageId], references: [id])
+  turn      Turn     @relation(fields: [turnId], references: [id])
+}
+
+enum MessageStatus {
+  PENDING
+  SUCCESS
+  FAILED
+}
