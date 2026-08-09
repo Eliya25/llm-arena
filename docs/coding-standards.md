@@ -21,7 +21,7 @@ Concrete, checkable version of the Rules section in `CLAUDE.md`. If something he
 1. `lint-staged` — `eslint --fix` + `prettier --write` on staged JS/TS files, `prettier --write` on staged JSON/CSS/MD.
 2. `tsc --noEmit` — the **whole project**, not just staged files. Deliberate: a commit that only touches one file can still break a type elsewhere (a changed export, a removed field), and CLAUDE.md's "actually run it" rule means that has to be caught before it lands, not after.
 
-Either step failing blocks the commit. The hook also defensively adds `C:\Windows\System32` to `PATH` before running anything — lint-staged spawns `eslint.cmd`/`prettier.cmd` through `cmd.exe` on Windows, and some shells (this one included) don't carry System32 on `PATH` by default, which makes that spawn fail silently with `ENOENT` instead of actually linting. Without this line the hook looks like it's enforcing something when it isn't.
+Either step failing blocks the commit. The hook also defensively adds `C:\Windows\System32` to `PATH` before running anything — lint-staged spawns `eslint.cmd`/`prettier.cmd` through `cmd.exe` on Windows, and some shells (this one included) don't carry System32 on `PATH` by default, which makes that spawn fail outright with `ENOENT` before eslint/prettier ever run. Without this line the hook blocks every commit for the wrong reason instead of actually linting.
 
 No test runner is wired in — per `CLAUDE.md`, this project verifies manually (dev server, browser, `curl`), not via an automated suite.
 
