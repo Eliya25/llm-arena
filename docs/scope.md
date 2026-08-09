@@ -16,17 +16,17 @@ There are rough hand-drawn sketches for the arena screen, the leaderboard, and t
 
 ## At a glance
 
-| #   | Feature                                     | Phase      | Status      |
-| --- | ------------------------------------------- | ---------- | ----------- |
-| 1   | Connecting to a model                       | Foundation | done        |
-| 2   | Coding standards & tooling                  | Foundation | done        |
-| 3   | Data model                                  | Foundation | done        |
-| 4   | Design & look                               | Foundation | not started |
-| 5   | Model picker                                | Slice 1    | not started |
-| 6   | Send a prompt, parallel streams, and voting | Slice 1    | not started |
-| 7   | App shell & thread history                  | Slice 2    | not started |
-| 8   | Public thread visibility & sharing          | Slice 3    | not started |
-| 9   | Leaderboard: global & personal              | Slice 4    | not started |
+| #   | Feature                                     | Phase      | Status                           |
+| --- | ------------------------------------------- | ---------- | -------------------------------- |
+| 1   | Connecting to a model                       | Foundation | done                             |
+| 2   | Coding standards & tooling                  | Foundation | done                             |
+| 3   | Data model                                  | Foundation | done                             |
+| 4   | Design & look                               | Foundation | done                             |
+| 5   | Model picker                                | Slice 1    | not started                      |
+| 6   | Send a prompt, parallel streams, and voting | Slice 1    | not started                      |
+| 7   | App shell & thread history                  | Slice 2    | UI built, real data/auth pending |
+| 8   | Public thread visibility & sharing          | Slice 3    | not started                      |
+| 9   | Leaderboard: global & personal              | Slice 4    | not started                      |
 
 ## Foundation
 
@@ -103,8 +103,32 @@ Verified against the real database: `npx prisma migrate dev --name init` applied
 
 A coffee or dark brown background, warm, not neutral gray or true black. One accent color, rust, used only for things you interact with, buttons, links, focus states, the win-rate bar, never as decoration. Because the background and the accent are both warm tones from the same family, the accent has to stay clearly brighter and more saturated than the background, enough that a button never blends into the page behind it, that's a real risk with two warm colors this close and worth checking by eye, not just by the numbers. Blue, indigo, and purple are never the accent, under any circumstance. Green is reserved only for marking a winner, red only for errors, never reused for anything else. Contrast should genuinely hold up in both light and dark mode, not just look fine at a glance.
 
-- [ ] Decide the approach
-- [ ] Build it
+**Decided:** grounded the direction in what the product actually is, a scorecard/instrument panel for judging three simultaneous model answers, not a generic chat UI, to avoid the templated AI-design defaults (`frontend-design` skill installed via `npx skills add anthropics/skills@frontend-design` and used for this, since it wasn't present in this project yet).
+
+Palette (six named hex values, layered warm-brown depth rather than flat brown-on-brown): `--bg #22160F`, `--surface #2E1F16`, `--border #4A3527`, `--ink #F2E9DE`, `--ink-muted #B6A08C`, `--rust #E2662A` (accent). `--win-green #4F9A5D` and `--error #D93A4A` sit outside the six as the two reserved single-purpose colors; error was deliberately pushed toward crimson and rust kept orange-leaning so the two don't read as the same red under the accent-vs-error rule.
+
+Type, three roles, each earning its place rather than decorative: **Fraunces** (warm variable serif) used sparingly for the big win-rate numeral and page titles only, ties to the coffee identity without repeating the cream-background-plus-terracotta cliché since this palette is dark and inverted from that. **Inter** for body text. **JetBrains Mono** for model slugs, ms, tokens/sec, token counts, real machine telemetry, not decoration.
+
+Signature element: the win-tally bar itself, "won 4 of 5" as a big Fraunces numeral next to a row of small rust tick marks, filled vs. empty, not an abstract percentage. This comes straight from the existing scope.md rule that win rate is always written as a count, so the one memorable visual element encodes a real fact instead of being applied decoration.
+
+Layout: the arena page as three lanes with hairline dividers between them, matching the sketch's structure; leaderboard rows built around the tally bar; models page a plain scannable list. Moderate radius (10px cards, 6px buttons, pill chips), 1px hairline borders, shadows reserved for popovers only, flat and disciplined rather than dense or newspaper-like.
+
+Motion tied to function, not ambient effect: a blinking caret per lane while a model is actively streaming, a live-ticking tokens/sec readout, and on vote the winning lane's border shifts to green while the other lanes dim to roughly 70% opacity. All of it respects `prefers-reduced-motion`.
+
+Open risk to verify by eye once this is actually wired into `globals.css` and the shadcn theme tokens: confirm rust reads clearly brighter and more saturated than the `--bg`/`--surface` family in both light and dark mode, per the risk already called out above.
+
+**Built:** shadcn initialized (`components.json`, `base-nova` style, `neutral` base color overridden entirely by the tokens below; `lib/utils.ts` for `cn()`). `app/globals.css` rewritten as the real token system: dark coffee palette as the default `:root` (the app's actual identity, not a `prefers-color-scheme` fallback), with a full accessible light variant gated behind `@media (prefers-color-scheme: light)` since a toggle UI was never decided. Every shadcn semantic token (`--background`, `--card`, `--primary`, `--destructive`, `--border`, `--ring`, `--sidebar-*`, etc.) is mapped to the decided palette; `--win`/`--win-foreground` added as extra tokens outside shadcn's default set since winner-marking isn't one of shadcn's built-in semantics, exposed as `--color-win` so `bg-win`/`text-win` utilities work. `--color-rust` aliases `--color-primary` so components can reach for the name the design is actually discussed in. Radius token set to `0.625rem` with the standard `sm/md/lg/xl` scale, landing buttons at 8px and cards at 10px, close to the decided 6px/10px split. `prefers-reduced-motion` handled globally. Visible focus ring wired at the base layer (`:focus-visible`), not left to per-component defaults.
+
+Fonts wired in `app/layout.tsx` via `next/font/google`: Fraunces (`--font-fraunces`), Inter (`--font-inter`), JetBrains Mono (`--font-jetbrains-mono`), replacing the default Geist pair, mapped to `--font-display`/`--font-sans`/`--font-mono` in the `@theme inline` block.
+
+`app/page.tsx` replaced the stock create-next-app placeholder (which hardcoded zinc/black/white, directly violating the no-neutral-gray rule) with a small themed placeholder that actually exercises the token system end to end: the win-tally signature element (`4 of 5` in Fraunces next to rust tick marks), a primary rust button, mono-set eyebrow label. This is not Feature 5/6's real arena UI, just enough to prove the design foundation renders correctly; it gets replaced when those features build the real screens.
+
+Verified: `tsc --noEmit`, `eslint .`, `prettier --check .`, and `next build` all pass clean. Dev server boots and `/` returns a real `200` with the new font-variable classes and token-driven markup present in the server-rendered HTML.
+
+**Not verified:** actual visual/contrast check in a real browser (no browser automation or screenshot tool available in this environment, and CLAUDE.md rules out installing one). The rust-vs-background contrast risk called out above still needs a real by-eye check from the human — dev server (`pnpm run dev`) is running at `http://localhost:3000`.
+
+- [x] Decide the approach
+- [x] Build it
 
 ## Slice 1: Core arena loop
 
@@ -134,8 +158,14 @@ Every prompt sent, every answer finishing, and every vote cast should be tracked
 
 The frame everything else sits inside: a top bar and sidebar that stay in place while the page scrolls, the thread's name, and each model's win record shown right there (shrinking down to a small dot and number if it gets crowded). The sidebar lists a signed-in user's own past threads so the tool actually feels usable across visits, not just in one sitting.
 
-- [ ] Decide the approach
-- [ ] Build it
+**Decided:** built the real shell (`components/app-shell/`) at `/arena`, grounded in `docs/ui-sketch/chat-interface.png` for structure only, restyled in the Feature 4 token system rather than the sketch's literal look. `AppShell` is a client component holding sidebar-collapse state; `Sidebar` and `TopBar` are its children. Sidebar: wordmark, nav (Arena/Leaderboard/Models), a "Your Threads" section, user avatar, theme-toggle icon. Top bar: sticky, sidebar-toggle button, breadcrumb, per-model win badges that drop their initial letter on narrow widths (colored dot + count stays), the literal "shrinking down if it gets crowded" behavior from the spec text above.
+
+What's real vs. placeholder: the sidebar-collapse toggle actually works (client state), and Sidebar nav now links to real routes with active-state highlighting via `usePathname` (`Sidebar` is a client component for this reason). `/leaderboard` and `/models` were also built as standalone pages so the nav actually goes somewhere — a static table (grounded in `docs/ui-sketch/leaderboard.png`) and a static card grid (grounded in `docs/ui-sketch/model-page.png`) respectively, both with placeholder data, not real votes or a real OpenRouter catalog. That placeholder content previews what Feature 9 (leaderboard) and Feature 5 (model picker/catalog) will make real later; Feature 7 itself is just the shell frame those pages sit inside. One correction against the leaderboard sketch: it shows a bare `71%` as the big bold number — that directly contradicts the win-rate rule already decided under Feature 9 ("always written as 'won 4 of 5,' never a bare percentage"), so the written rule won, not the sketch, and the big number is "Won 507 of 700" instead. The thread list, sign-in button, theme toggle, model win-record numbers, prompt box, and model chips are all still static, non-functional placeholder content — no real Clerk session, no real thread data, no live model catalog. The theme toggle stays inert on purpose: Feature 4 decided dark is the app's real identity with light as an accessibility fallback via `prefers-color-scheme`, not a user-facing toggle, so wiring one up would be new, undecided scope, not part of this feature.
+
+Verified: `tsc --noEmit`, `eslint .`, `prettier --check .`, and `next build` all pass clean. Dev server boots and `/arena` returns a real `200`.
+
+- [x] Decide the approach
+- [x] Build it
 
 ## Slice 3: Public visibility & sharing
 
