@@ -51,6 +51,7 @@ Verified: `tsc --noEmit`, `eslint .`, and `next build` all pass clean. Dev serve
 Real credentials now in place for everything: `OPENROUTER_API_KEY`, Clerk keys, `ARCJET_KEY`, `DATABASE_URL`, and PostHog keys. No more placeholders.
 
 **Full verification pass (2026-08-09), each piece checked independently against its real credential:**
+
 - `tsc --noEmit`, `eslint .`, `next build` — all clean.
 - OpenRouter: direct call with the real key streams a real `200` SSE response.
 - Clerk: `CLERK_SECRET_KEY` authenticates against `api.clerk.com` (`200`).

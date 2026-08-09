@@ -1,0 +1,8 @@
+.claude/
+.next/
+node_modules/
+pnpm-lock.yaml
+prisma/migrations/
+next-env.d.ts
+tsconfig.tsbuildinfo
+public/

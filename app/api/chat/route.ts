@@ -50,7 +50,10 @@ export async function POST(request: NextRequest) {
 
     if (decision.reason.isPromptInjection()) {
       return Response.json(
-        { error: "That prompt looks like it's trying to manipulate the model. Please rephrase it." },
+        {
+          error:
+            "That prompt looks like it's trying to manipulate the model. Please rephrase it.",
+        },
         { status: 400 },
       );
     }
