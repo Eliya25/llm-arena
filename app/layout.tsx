@@ -33,6 +33,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
     <ClerkProvider>
       <html
         lang="en"
+        suppressHydrationWarning
         className={`${fraunces.variable} ${inter.variable} ${jetbrainsMono.variable} h-full antialiased`}
       >
         <body className="flex min-h-full flex-col">

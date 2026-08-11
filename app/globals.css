@@ -52,54 +52,54 @@
   --sidebar-ring: #e2662a;
 }
 
-/* Accessible light alternative — same identity, contrast re-checked for a light ground. */
-@media (prefers-color-scheme: light) {
-  :root {
-    --background: #f5eee2;
-    --foreground: #2b1d14;
+/* Accessible light alternative — same identity, contrast re-checked for a light
+   ground. Applied via the .light class set by next-themes before first paint;
+   system preference is the default, an explicit choice is remembered. */
+:root.light {
+  --background: #f5eee2;
+  --foreground: #2b1d14;
 
-    --card: #fbf6ec;
-    --card-foreground: #2b1d14;
-    --popover: #fbf6ec;
-    --popover-foreground: #2b1d14;
+  --card: #fbf6ec;
+  --card-foreground: #2b1d14;
+  --popover: #fbf6ec;
+  --popover-foreground: #2b1d14;
 
-    --primary: #e2662a;
-    --primary-foreground: #1a0f09;
+  --primary: #e2662a;
+  --primary-foreground: #1a0f09;
 
-    --secondary: #eae0ce;
-    --secondary-foreground: #2b1d14;
+  --secondary: #eae0ce;
+  --secondary-foreground: #2b1d14;
 
-    --muted: #efe6d6;
-    --muted-foreground: #7a6650;
+  --muted: #efe6d6;
+  --muted-foreground: #7a6650;
 
-    --accent: #f3dcc9;
-    --accent-foreground: #2b1d14;
+  --accent: #f3dcc9;
+  --accent-foreground: #2b1d14;
 
-    --destructive: #c1303b;
-    --destructive-foreground: #fbf6ec;
+  --destructive: #c1303b;
+  --destructive-foreground: #fbf6ec;
 
-    --border: #d9c9ae;
-    --input: #d9c9ae;
-    --ring: #e2662a;
+  --border: #d9c9ae;
+  --input: #d9c9ae;
+  --ring: #e2662a;
 
-    --win: #3f7d4b;
-    --win-foreground: #f6fbf3;
+  --win: #3f7d4b;
+  --win-foreground: #f6fbf3;
 
-    --chart-1: #e2662a;
-    --chart-2: #3f7d4b;
-    --chart-3: #7a6650;
-    --chart-4: #c1303b;
-    --chart-5: #d9c9ae;
+  --chart-1: #e2662a;
+  --chart-2: #3f7d4b;
+  --chart-3: #7a6650;
+  --chart-4: #c1303b;
+  --chart-5: #d9c9ae;
 
-    --sidebar: #efe6d6;
-    --sidebar-foreground: #2b1d14;
-    --sidebar-primary: #e2662a;
-    --sidebar-primary-foreground: #1a0f09;
-    --sidebar-accent: #f3dcc9;
-    --sidebar-accent-foreground: #2b1d14;
-    --sidebar-border: #d9c9ae;
-    --sidebar-ring: #e2662a;
-  }
+  --sidebar: #efe6d6;
+  --sidebar-foreground: #2b1d14;
+  --sidebar-primary: #e2662a;
+  --sidebar-primary-foreground: #1a0f09;
+  --sidebar-accent: #f3dcc9;
+  --sidebar-accent-foreground: #2b1d14;
+  --sidebar-border: #d9c9ae;
+  --sidebar-ring: #e2662a;
 }
 
 @theme inline {
