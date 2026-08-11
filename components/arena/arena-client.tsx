@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import posthog from "posthog-js";
 import { useClerk, useUser } from "@clerk/nextjs";
@@ -14,6 +14,7 @@ import {
   failMessage,
   type CreateTurnResult,
 } from "@/app/arena/actions";
+import { useNewChat } from "@/components/app-shell/new-chat-context";
 import { useThreads } from "@/components/app-shell/threads-context";
 import { MAX_SELECTED_MODELS, PromptBox } from "./prompt-box";
 
@@ -139,6 +140,7 @@ export function ArenaClient({
   const { isSignedIn } = useUser();
   const clerk = useClerk();
   const { refreshThreads } = useThreads();
+  const { resetRef } = useNewChat();
 
   const [selectedIds, setSelectedIds] = useState<string[]>(() =>
     catalog.slice(0, MAX_SELECTED_MODELS).map((model) => model.id),
@@ -183,6 +185,29 @@ export function ArenaClient({
   const outcomeWritesRef = useRef(
     new Map<number, Map<string, Promise<boolean>>>(),
   );
+
+  // Hands the sidebar's "New chat" a way to clear this arena in place, since a
+  // link to /arena can't be trusted to remount it once the first send has
+  // rewritten the URL (see components/app-shell/new-chat-context.tsx). Only the
+  // fresh-arena page registers — from a real thread page, New chat is an
+  // ordinary navigation to a different route, which needs no help.
+  //
+  // Streams still running are deliberately left alone rather than aborted: that
+  // is exactly what navigating away already does, so an abandoned turn saves
+  // honestly either way instead of landing as a misleading "stopped" row.
+  // Patches from those streams no-op once their turn is gone from state.
+  useEffect(() => {
+    if (initialThreadId !== null) return;
+    const ref = resetRef;
+    ref.current = () => {
+      setTurns([]);
+      setThreadId(null);
+      setPrompt("");
+    };
+    return () => {
+      ref.current = null;
+    };
+  }, [initialThreadId, resetRef]);
 
   function trackOutcome(
     turnKey: number,
@@ -638,18 +663,24 @@ export function ArenaClient({
   return (
     <div className="flex h-full flex-col">
       {turns.length === 0 ? (
-        <div className="flex flex-1 flex-col items-center justify-center gap-4 px-6 text-center">
-          <h1 className="max-w-2xl font-display text-4xl font-medium text-balance sm:text-5xl">
-            Ask three models at once
+        <div className="relative flex flex-1 flex-col items-center justify-center gap-5 px-6 pb-28 text-center">
+          <div className="flex items-center gap-2 rounded-full border border-primary/25 bg-primary/8 px-3 py-1 font-mono text-[10px] tracking-[0.18em] text-primary uppercase">
+            <span className="h-1.5 w-1.5 rounded-full bg-primary" /> Live model
+            arena
+          </div>
+          <h1 className="max-w-3xl font-display text-5xl leading-[0.98] font-semibold tracking-[-0.04em] text-balance sm:text-7xl">
+            One prompt. Three minds.
+            <span className="block font-normal text-primary italic">
+              Your verdict.
+            </span>
           </h1>
-          <p className="max-w-xl text-base text-balance text-muted-foreground">
-            One prompt goes to every model you pick. They answer side by side,
-            each with its own real speed and token count, and you decide which
-            one was actually worth it.
+          <p className="max-w-xl text-[15px] leading-6 text-balance text-muted-foreground">
+            Compare answers side by side, inspect real speed and token data,
+            then crown the model that earned it.
           </p>
         </div>
       ) : (
-        <div className="flex-1 overflow-y-auto px-6 py-6">
+        <div className="flex-1 overflow-y-auto px-4 py-6 sm:px-6 sm:py-8">
           <div className="mx-auto flex max-w-6xl flex-col gap-8">
             {turns.map((turn) => {
               const doneCount = turn.lanes.filter(
@@ -673,7 +704,7 @@ export function ArenaClient({
               return (
                 <div key={turn.key} className="flex flex-col gap-4">
                   <div className="flex justify-end">
-                    <p className="max-w-xl rounded-lg border border-border bg-secondary px-4 py-2 text-sm whitespace-pre-wrap text-secondary-foreground">
+                    <p className="max-w-xl rounded-2xl rounded-br-md border border-primary/15 bg-secondary px-4 py-2.5 text-sm whitespace-pre-wrap text-secondary-foreground shadow-sm">
                       {turn.prompt}
                     </p>
                   </div>
@@ -699,7 +730,7 @@ export function ArenaClient({
                         <article
                           key={lane.modelId}
                           className={cn(
-                            "flex min-h-48 flex-col rounded-lg border bg-card transition-opacity",
+                            "soft-shadow flex min-h-56 flex-col overflow-hidden rounded-xl border bg-card/95 transition-[opacity,border-color,transform] hover:-translate-y-0.5",
                             isWinner ? "border-win" : "border-border",
                             dimmed && "opacity-70",
                           )}
