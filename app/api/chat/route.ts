@@ -138,6 +138,9 @@ export async function POST(request: NextRequest) {
     userId: distinctId,
     requested: 1,
     detectPromptInjectionMessage: latestPrompt,
+    // Scan the latest user message explicitly — the body was already consumed
+    // by request.json() above, so the deprecated whole-body scan can't run.
+    sensitiveInfoValue: latestPrompt,
   });
 
   if (decision.isDenied()) {
@@ -150,6 +153,16 @@ export async function POST(request: NextRequest) {
       return Response.json(
         { error: "You're sending requests too quickly. Please slow down." },
         { status: 429 },
+      );
+    }
+
+    if (decision.reason.isSensitiveInfo()) {
+      return Response.json(
+        {
+          error:
+            "That prompt looks like it contains a card number. Threads are public by link, so please remove it and try again.",
+        },
+        { status: 400 },
       );
     }
 

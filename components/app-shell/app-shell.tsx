@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import type { ThreadListItem } from "@/app/arena/actions";
+import { NewChatProvider } from "./new-chat-context";
 import { Sidebar } from "./sidebar";
 import { ThreadsProvider } from "./threads-context";
 import { TopBar, type ModelBadge } from "./top-bar";
@@ -25,18 +26,23 @@ export function AppShell({
 
   return (
     <ThreadsProvider initialThreads={threads}>
-      <div className="flex h-dvh w-full overflow-hidden">
-        <Sidebar collapsed={collapsed} />
-        <div className="flex flex-1 flex-col overflow-hidden">
-          <TopBar
-            breadcrumb={breadcrumb}
-            models={models}
-            showCopyLink={showCopyLink}
-            onToggleSidebar={() => setCollapsed((value) => !value)}
-          />
-          <main className="flex-1 overflow-y-auto">{children}</main>
+      <NewChatProvider>
+        <div className="flex h-dvh w-full overflow-hidden bg-background">
+          <Sidebar collapsed={collapsed} />
+          <div className="flex flex-1 flex-col overflow-hidden">
+            <TopBar
+              breadcrumb={breadcrumb}
+              models={models}
+              showCopyLink={showCopyLink}
+              onToggleSidebar={() => setCollapsed((value) => !value)}
+            />
+            <main className="relative flex-1 overflow-y-auto">
+              <div className="surface-grid pointer-events-none absolute inset-0 opacity-45" />
+              <div className="relative h-full">{children}</div>
+            </main>
+          </div>
         </div>
-      </div>
+      </NewChatProvider>
     </ThreadsProvider>
   );
 }

@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import posthog from "posthog-js";
 import { useClerk, useUser } from "@clerk/nextjs";
@@ -14,6 +14,7 @@ import {
   failMessage,
   type CreateTurnResult,
 } from "@/app/arena/actions";
+import { useNewChat } from "@/components/app-shell/new-chat-context";
 import { useThreads } from "@/components/app-shell/threads-context";
 import { MAX_SELECTED_MODELS, PromptBox } from "./prompt-box";
 
@@ -31,6 +32,11 @@ type Lane = {
   ttftMs?: number;
   tokensPerSecond?: number;
   totalTokens?: number;
+  // Live approximations while the stream runs, always rendered with a "~" so
+  // an estimate never poses as a measurement. Cleared when the stream ends
+  // and the exact usage-based numbers take over.
+  liveTokensPerSecond?: number;
+  liveTokens?: number;
 };
 
 type TurnView = {
@@ -83,18 +89,36 @@ const MAX_HISTORY_CONTENT = 32_000;
 // Matches the server's message-count cap — a long thread keeps the most
 // recent exchanges and drops the oldest instead of failing every lane.
 const MAX_HISTORY_MESSAGES = 40;
+// Rough characters-per-token for the live streaming readout only — the final
+// numbers always come from OpenRouter's real usage block.
+const CHARS_PER_TOKEN = 4;
 
-// Only measured numbers appear — a metric that hasn't arrived yet is simply
-// absent, never a dash or an invented value.
+// Metrics tick live while a lane streams — approximations carry a "~" so an
+// estimate never poses as a measurement; once the stream ends only the exact
+// usage-based numbers remain. A metric that hasn't arrived is simply absent,
+// never a dash or an invented value.
 function laneMetrics(lane: Lane): string {
+  const streaming = lane.status === "streaming";
   const parts = [
     lane.ttftMs !== undefined ? `${lane.ttftMs}ms to first token` : null,
-    lane.tokensPerSecond !== undefined ? `${lane.tokensPerSecond} tok/s` : null,
-    lane.totalTokens !== undefined ? `${lane.totalTokens} tokens` : null,
+    streaming
+      ? lane.liveTokensPerSecond !== undefined
+        ? `~${lane.liveTokensPerSecond} tok/s`
+        : null
+      : lane.tokensPerSecond !== undefined
+        ? `${lane.tokensPerSecond} tok/s`
+        : null,
+    streaming
+      ? lane.liveTokens !== undefined
+        ? `~${lane.liveTokens} tokens`
+        : null
+      : lane.totalTokens !== undefined
+        ? `${lane.totalTokens} tokens`
+        : null,
   ].filter((part): part is string => part !== null);
 
   if (parts.length === 0) {
-    return lane.status === "streaming" ? "waiting for first token…" : "";
+    return streaming ? "waiting for first token…" : "";
   }
   return parts.join(" · ");
 }
@@ -116,6 +140,7 @@ export function ArenaClient({
   const { isSignedIn } = useUser();
   const clerk = useClerk();
   const { refreshThreads } = useThreads();
+  const { resetRef } = useNewChat();
 
   const [selectedIds, setSelectedIds] = useState<string[]>(() =>
     catalog.slice(0, MAX_SELECTED_MODELS).map((model) => model.id),
@@ -160,6 +185,44 @@ export function ArenaClient({
   const outcomeWritesRef = useRef(
     new Map<number, Map<string, Promise<boolean>>>(),
   );
+
+  // Bumped every time "New chat" clears the arena. A createTurn still in
+  // flight when that happens belongs to the conversation the user just walked
+  // away from, so its callback must not adopt that thread as the current one.
+  const sessionRef = useRef(0);
+
+  // Hands the sidebar's "New chat" a way to clear this arena in place, since a
+  // link to /arena can't be trusted to remount it once the first send has
+  // rewritten the URL (see components/app-shell/new-chat-context.tsx). Only the
+  // fresh-arena page registers — from a real thread page, New chat is an
+  // ordinary navigation to a different route, which needs no help.
+  //
+  // Streams still running are deliberately left alone rather than aborted: that
+  // is exactly what navigating away already does, so an abandoned turn saves
+  // honestly either way instead of landing as a misleading "stopped" row.
+  // Patches from those streams no-op once their turn is gone from state.
+  //
+  // Their controllers are dropped from the map, though — stopStreamingLanes()
+  // aborts everything it can still see, so the first prompt of the new chat
+  // would otherwise reach back and kill the abandoned conversation's lanes,
+  // persisting them as FAILED: answers recorded as never arriving when they
+  // were streaming fine. Dropping them only stops this arena from managing
+  // those streams; each one keeps its own controller, so its stall watchdog
+  // still fires and a genuine failure is still recorded as one.
+  useEffect(() => {
+    if (initialThreadId !== null) return;
+    const ref = resetRef;
+    ref.current = () => {
+      sessionRef.current += 1;
+      controllersRef.current.clear();
+      setTurns([]);
+      setThreadId(null);
+      setPrompt("");
+    };
+    return () => {
+      ref.current = null;
+    };
+  }, [initialThreadId, resetRef]);
 
   function trackOutcome(
     turnKey: number,
@@ -345,8 +408,18 @@ export function ArenaClient({
               });
             }
             finalText += delta;
+            // Live readout: estimated tokens from streamed characters over
+            // the measured elapsed window. The rate waits half a second so
+            // the first chunks don't flash a wild number.
+            const liveTokens = Math.round(finalText.length / CHARS_PER_TOKEN);
+            const elapsedSeconds = (performance.now() - firstTokenAt) / 1000;
             patchLane(turnKey, modelId, (lane) => ({
               text: lane.text + delta,
+              liveTokens,
+              liveTokensPerSecond:
+                elapsedSeconds >= 0.5
+                  ? Math.round(liveTokens / elapsedSeconds)
+                  : lane.liveTokensPerSecond,
             }));
           }
 
@@ -381,6 +454,8 @@ export function ArenaClient({
         status: "done",
         totalTokens: completionTokens,
         tokensPerSecond,
+        liveTokens: undefined,
+        liveTokensPerSecond: undefined,
       });
       trackOutcome(
         turnKey,
@@ -461,6 +536,7 @@ export function ArenaClient({
     // The database write runs alongside the streams, never in front of them —
     // a slow write must not delay the first token.
     const isNewThread = threadId === null;
+    const session = sessionRef.current;
     const persistence = createTurn({
       threadId,
       prompt: promptText,
@@ -468,19 +544,32 @@ export function ArenaClient({
     });
     persistenceRef.current.set(turnKey, persistence);
     void persistence.then((result) => {
+      // "New chat" was pressed while this write was in flight, so the turn on
+      // screen is gone. The thread it created is real and still belongs in the
+      // sidebar — but adopting it here would silently make the next prompt a
+      // follow-up in the conversation the user just walked away from, and
+      // would point the address bar back at it.
+      const superseded = sessionRef.current !== session;
+
       if ("error" in result) {
-        patchTurn(turnKey, { saveFailed: true });
-      } else {
-        setThreadId(result.threadId);
-        patchTurn(turnKey, { turnId: result.turnId });
-        if (isNewThread) {
-          // The thread now has a real address. replaceState, not a router
-          // navigation — navigating would swap the page tree and kill the
-          // streams still running. A later refresh lands on the thread page.
-          window.history.replaceState(null, "", `/arena/${result.threadId}`);
-          // And it appears in the sidebar right away.
-          refreshThreads();
-        }
+        if (!superseded) patchTurn(turnKey, { saveFailed: true });
+        return;
+      }
+
+      if (superseded) {
+        if (isNewThread) refreshThreads();
+        return;
+      }
+
+      setThreadId(result.threadId);
+      patchTurn(turnKey, { turnId: result.turnId });
+      if (isNewThread) {
+        // The thread now has a real address. replaceState, not a router
+        // navigation — navigating would swap the page tree and kill the
+        // streams still running. A later refresh lands on the thread page.
+        window.history.replaceState(null, "", `/arena/${result.threadId}`);
+        // And it appears in the sidebar right away.
+        refreshThreads();
       }
     });
 
@@ -514,6 +603,8 @@ export function ArenaClient({
       ttftMs: undefined,
       tokensPerSecond: undefined,
       totalTokens: undefined,
+      liveTokens: undefined,
+      liveTokensPerSecond: undefined,
     });
     void streamModel(
       turnKey,
@@ -601,18 +692,24 @@ export function ArenaClient({
   return (
     <div className="flex h-full flex-col">
       {turns.length === 0 ? (
-        <div className="flex flex-1 flex-col items-center justify-center gap-4 px-6 text-center">
-          <h1 className="max-w-2xl font-display text-4xl font-medium text-balance sm:text-5xl">
-            Ask three models at once
+        <div className="relative flex flex-1 flex-col items-center justify-center gap-5 px-6 pb-28 text-center">
+          <div className="flex items-center gap-2 rounded-full border border-primary/25 bg-primary/8 px-3 py-1 font-mono text-[10px] tracking-[0.18em] text-primary uppercase">
+            <span className="h-1.5 w-1.5 rounded-full bg-primary" /> Live model
+            arena
+          </div>
+          <h1 className="max-w-3xl font-display text-5xl leading-[0.98] font-semibold tracking-[-0.04em] text-balance sm:text-7xl">
+            One prompt. Three minds.
+            <span className="block font-normal text-primary italic">
+              Your verdict.
+            </span>
           </h1>
-          <p className="max-w-xl text-base text-balance text-muted-foreground">
-            One prompt goes to every model you pick. They answer side by side,
-            each with its own real speed and token count, and you decide which
-            one was actually worth it.
+          <p className="max-w-xl text-[15px] leading-6 text-balance text-muted-foreground">
+            Compare answers side by side, inspect real speed and token data,
+            then crown the model that earned it.
           </p>
         </div>
       ) : (
-        <div className="flex-1 overflow-y-auto px-6 py-6">
+        <div className="flex-1 overflow-y-auto px-4 py-6 sm:px-6 sm:py-8">
           <div className="mx-auto flex max-w-6xl flex-col gap-8">
             {turns.map((turn) => {
               const doneCount = turn.lanes.filter(
@@ -636,7 +733,7 @@ export function ArenaClient({
               return (
                 <div key={turn.key} className="flex flex-col gap-4">
                   <div className="flex justify-end">
-                    <p className="max-w-xl rounded-lg border border-border bg-secondary px-4 py-2 text-sm whitespace-pre-wrap text-secondary-foreground">
+                    <p className="max-w-xl rounded-2xl rounded-br-md border border-primary/15 bg-secondary px-4 py-2.5 text-sm whitespace-pre-wrap text-secondary-foreground shadow-sm">
                       {turn.prompt}
                     </p>
                   </div>
@@ -662,7 +759,7 @@ export function ArenaClient({
                         <article
                           key={lane.modelId}
                           className={cn(
-                            "flex min-h-48 flex-col rounded-lg border bg-card transition-opacity",
+                            "soft-shadow flex min-h-56 flex-col overflow-hidden rounded-xl border bg-card/95 transition-[opacity,border-color,transform] hover:-translate-y-0.5",
                             isWinner ? "border-win" : "border-border",
                             dimmed && "opacity-70",
                           )}
