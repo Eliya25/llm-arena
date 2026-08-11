@@ -27,8 +27,21 @@ There are rough hand-drawn sketches for the arena screen, the leaderboard, and t
 | 7   | App shell & thread history                  | Slice 2    | done                       |
 | 8   | Public thread visibility & sharing          | Slice 3    | done                       |
 | 9   | Leaderboard: global & personal              | Slice 4    | built, awaiting live check |
+| 10  | Abuse protection after public sharing       | Slice 3    | done                       |
+| 11  | Starting a new chat                         | Slice 2    | built, awaiting live check |
 
 ## Foundation
+
+### Visual refinement pass (2026-08-11)
+
+Refined the existing scorecard/instrument-panel direction into a warmer “judge's desk” interface: stronger surface hierarchy, quieter measurement grid, more confident display typography, a clearer responsive shell, elevated comparison lanes, and a more deliberate composer. The New chat action is now the sidebar's unmistakable reset control, with a filled rust treatment, compact plus mark, and desktop shortcut hint. The established color semantics remain unchanged: rust for interaction, green only for winners, red only for errors.
+
+- [x] Review the existing scope, sketches, and implemented screens
+- [x] Refine global surfaces, hierarchy, typography, focus, and selection details
+- [x] Redesign the New chat action and improve responsive sidebar behavior
+- [x] Improve the arena empty state, answer lanes, and prompt composer
+- [x] Polish the leaderboard and model catalog page hierarchy
+- [ ] Verify the complete visual pass in a real browser
 
 ### 1. How the app actually connects to a model
 
@@ -232,6 +245,36 @@ Verified: `tsc --noEmit`, `eslint .`, `prettier --check .`, `next build` all pas
 - [x] Build thread history: thread-scoped top-bar win badges
 - [x] Verify: typecheck/lint/build clean, route smoke-checks pass, and the real browser pass done (2026-08-11) — threads restored after refresh, follow-ups continued in the same thread, and the database rows confirm it (see Feature 6's live-check note; e.g. a follow-up turn with two `SUCCESS` lanes and one honest `PENDING` lane sits in the same thread as its voted first turn)
 
+### 11. Starting a new chat
+
+A visible way to start a fresh conversation, the way ChatGPT and Claude both put one at the top of the sidebar. Until now the only route to a blank arena was the "Arena" nav item, which reads as a section to browse rather than an action to take.
+
+**Decided (2026-08-11).** A prominent "New chat" action sits above the nav list, and the "Arena" nav item stays where it is — chosen over renaming "Arena" or dropping it, so the section keeps its name and the action gets a real affordance. It's visible signed-out too, since `/arena` is public and composing a prompt is what opens the sign-in modal; a visitor reading a shared thread can start their own from the same place the read-only note points them.
+
+**The problem worth recording, because it isn't obvious.** This looks like a one-line `<Link href="/arena">` and isn't. Feature 7 deliberately rewrites the URL with `window.history.replaceState` after the first send, so you can sit at `/arena/<id>` while the rendered tree is still the `/arena` page. From that state a link to `/arena` may be reconciled as a same-page navigation: the URL changes, the tree is reused, and the old turns stay on screen — a button that looks alive and does nothing, in the single most common case there is (send a prompt, then start a new chat).
+
+Rather than gamble on client-router behavior that can't be verified from a terminal, the arena hands the sidebar a way to clear itself. `components/app-shell/new-chat-context.tsx` holds a `resetRef` — a ref, not state, because nothing needs to re-render when it changes and the sidebar only reads it at click time. The fresh-arena `ArenaClient` (and only that one — `initialThreadId === null`) registers a reset while mounted. The sidebar's link then does one of two things: if a reset is registered it prevents default, clears in place, and `replaceState`s the address bar back to `/arena`; if not — a real thread page, or any other route — it navigates like an ordinary link. Modified clicks (⌘/Ctrl/Shift/Alt, middle button) are always left to the browser, so open-in-new-tab still works. It stays a real `<a href="/arena">` throughout rather than becoming a `<button>`, so link semantics survive.
+
+**Streams still running are deliberately not aborted.** That's exactly what navigating away already does — Feature 7 records that in-flight fetches complete and persist — so an abandoned turn saves honestly whichever path you took, instead of landing as a misleading "stopped" row. Patches arriving from those streams simply no-op once their turn is gone from state. The model selection also survives a reset on purpose: it's how you've set the app up, not part of the conversation.
+
+**Design — proposed one way, shipped another.** `frontend-design` was invoked per CLAUDE.md, but the system was already fixed by Feature 4, so the only real choice was weight. The proposal was an **outlined** rust button (`border-primary/40`, `text-primary`, hover fill), on the reasoning that starting over is a reset rather than the app's main move and shouldn't compete with Send and "Pick as winner", the two filled-rust actions. **The user overruled that during the build and made it a filled rust button** (`bg-primary`, `text-primary-foreground`, `soft-shadow`, semibold) — recorded here rather than quietly reworded, since it changes the accent hierarchy the outline reasoning was protecting: New chat now reads at the same weight as the app's primary actions, which is a defensible call for the one control that starts everything.
+
+As shipped: a `Plus` icon inside a small translucent chip rather than the proposed `SquarePen`, a `⌘K` hint badge on the right at `md` and up, and the label hidden below `md` so the sidebar collapses to icons on narrow screens on its own (`w-16 md:w-64`) in addition to the manual collapse toggle. Nav rows and this button share one `SIDEBAR_ROW` constant for their geometry, per the no-copy-paste rule, so their icons line up on a single grid; collapsed, the label goes `sr-only` and `title` supplies the tooltip. A broader visual pass landed alongside this (grid texture behind the main area, an "A" wordmark chip, a rust active-indicator bar on nav rows) — Feature 4's palette and rules are unchanged, so it's a refinement within the existing system rather than a new direction.
+
+**Known gap, not shipped working: the `⌘K` badge is decorative.** There is no keyboard handler bound to it anywhere in the app — the only `metaKey` reference in the codebase is the modified-click guard on this very link. The badge currently advertises a shortcut that does nothing, which is the kind of promise the error-handling rule elsewhere in this project would not tolerate. Either wire it up or drop the badge; it should not stay as-is.
+
+Verified: `tsc --noEmit`, `eslint .`, `prettier --check .`, `next build` all clean. Against the running dev server, the button server-renders on all four shell pages — `/arena`, `/leaderboard`, `/models`, and a signed-out public thread — as a real `<a href="/arena">` with the rust outline classes and an `aria-hidden` icon beside a visible text label. DOM order confirms it sits above the nav (New chat → Leaderboard → Your threads).
+
+**Not verifiable from the terminal:** the click behavior itself is entirely client-side, and the case that motivated the whole design — send a prompt, then press New chat — needs a signed-in browser session. The reset path is the one that runs there, so that is the path to check.
+
+- [x] Decide the approach
+- [x] Build it: `new-chat-context.tsx`, provider in `AppShell`, reset registered by the fresh-arena `ArenaClient`
+- [x] Build it: the sidebar action, shared `SIDEBAR_ROW` geometry, collapsed state
+- [x] Verify: checks clean, renders on every shell page in the right position
+- [ ] Live check: send a prompt, press New chat, confirm the turns clear and the URL returns to `/arena`
+- [ ] Live check: press New chat from a thread page and from the collapsed sidebar
+- [ ] Decide the `⌘K` badge: wire the shortcut, or remove the badge — it currently does nothing
+
 ## Slice 3: Public visibility & sharing
 
 ### 8. Public thread visibility & sharing
@@ -258,6 +301,61 @@ Verified: `tsc --noEmit`, `eslint .`, `prettier --check .`, `next build` all cle
 - [x] Build it: copy-link button + `generateMetadata`
 - [x] Verify: checks + signed-out `curl` of a real thread (200, read-only, real title) and fake id (404)
 - [x] Live check passed (2026-08-11): the user copied a thread link and opened it in a different browser — the shared chat rendered, confirming copy-link and the public read-only view end to end
+
+**Follow-up:** opening the read path changed what can be abused — an unauthenticated database read per link, uncapped write actions, and PII that becomes permanently public with no unshare path. That's Feature 10, which re-matches Arcjet to the surface this feature created.
+
+### 10. Abuse protection after public sharing
+
+Feature 8 made every thread readable by anyone holding its link. That changed the app's exposure in ways the existing Arcjet setup didn't cover, so this feature re-matches protection to the surface that actually exists now.
+
+**What was already there, for the record:** one request-based client (`@arcjet/next`) in `lib/arcjet.ts`, applied at exactly one place — `POST /api/chat` — with `shield`, `detectBot` (`allow: []`), `detectPromptInjection`, and a `tokenBucket` (refill 5 / 10s, capacity 10) keyed by the `userId` characteristic. Nothing else in the app touched Arcjet.
+
+**What sharing actually opened up, and the verdict on each:**
+
+- **The public thread page is an unauthenticated database read.** `/arena/[threadId]` runs a `findUnique` with the full turns → messages → vote include on every request, with no auth and no limit — anyone with a link can hammer it. **Protected.**
+- **The server actions had no rate limit.** `createTurn`, `completeMessage`, `failMessage`, and `castVote` were owner-enforced from Feature 6 but uncapped, so a scripted signed-in client could flood threads, turns, and messages while entirely bypassing `/api/chat`'s bucket. **Protected.**
+- **PII in a prompt is now permanently public.** No unshare path exists, by design. **Protected, narrowly — card numbers only.**
+- **`completeMessage` still writes client-supplied content and metrics.** A signed-in user can publish arbitrary text at a shareable URL with no model involved, and feed fabricated ttft/tok-s numbers into the global leaderboard. Rate limiting caps the volume, but the trust problem itself is **not an Arcjet rule** and is deliberately still open — recorded here rather than quietly ignored.
+
+**Ruled out, each with a reason:**
+
+- **`detectBot` on the public thread page** — `allow: []` there would block the crawlers and link unfurlers that make a shared link worth sharing. It would defeat Feature 8 rather than protect it. Left off deliberately, which is why the read path needs its own rate limit instead.
+- **`validateEmail` / `protectSignup`** — Clerk owns signup entirely; there's no auth form in this codebase to protect.
+- **`filter` (IP / VPN / geo)** — no abuse observed and no code needed today; it can be pushed as a _remote_ rule from the Arcjet CLI during an incident, which is the right time to decide it.
+- **The Guard SDK and `experimental_moderateContent`** — Guard is for non-HTTP code, and this app has none: no queues, no workers, no MCP server, everything runs in a route handler or a server action. Worth naming the real consequence though: public sharing turned "someone posts something ugly at a public URL" into a live possibility, and "no admin or moderation page" is still in _Not doing right now_. That stays a deliberate gap, not an oversight.
+- **`sensitiveInfo` on emails and phone numbers** — rejected as too broad. It would deny legitimate prompts (drafting an email, parsing contact details), and this is a tool for judging model answers, not a vault.
+- **A read limit on `/leaderboard` and `/models`** — both are public reads too, and `/leaderboard` is genuinely the same shape as the thread page: an unauthenticated database aggregation anyone can hammer. Left alone on purpose, because the thread page is what public sharing actually created and widening beyond that wasn't the ask. `/models` is cushioned anyway by the catalog's hour-long fetch cache. The `ajPublicRead` client is right there if either ever matters — noted so this is a decision, not an oversight.
+- **A rate limit on `getOwnThreads`** — it's a single indexed read, and denying it would blank the sidebar's thread list (the action returns `[]` on failure by design). The downside outweighs the gain. Left uncapped, knowingly.
+
+**Built (2026-08-11).** `lib/arcjet.ts` now exports three clients rather than one. They're deliberately separate rather than one shared client with `withRule()`: the surfaces need different keys (person vs. IP) and different budgets, and a single shared token bucket would make a prompt's own persistence writes eat the streaming quota. Each bucket's configuration is distinct, so Arcjet counts them separately.
+
+- **`aj`** (unchanged, plus one rule) — `/api/chat`. Gained `sensitiveInfo({ mode: "LIVE", deny: ["CREDIT_CARD_NUMBER"] })`, detected locally by the bundled WASM engine with no extra package. The value is passed explicitly as `sensitiveInfoValue` (the latest user message) because the route already consumed the body with `request.json()`, so the deprecated whole-body scan could never have run. Denial maps to a `400` naming the real reason, including _why_ it matters: threads are public by link.
+- **`ajActions`** — the server actions. `shield` plus a `tokenBucket` (refill 15 / 10s, capacity 45), keyed per-user. Costs are weighted via `requested` at each call site, which is what a token bucket is for: `createTurn` costs 5 (it writes a thread, a turn, and a row per model), while the single-row updates cost 1. A normal turn spends 5 + 3 + 1 = 9, so the sustained ceiling lands close to `/api/chat`'s own — deliberately, so the streaming limit is what bites first, not persistence.
+- **`ajPublicRead`** — the thread page. `shield` plus a `tokenBucket` (refill 20 / 10s, capacity 60) and **no `userId` characteristic**, so it keys by IP, which is the only identity an anonymous visitor has. The budget is deliberately generous because a whole office behind one NAT shares a key.
+
+Two placement details worth recording. First, the gating in `app/arena/actions.ts` runs **before** the user upsert, not after — the upsert is itself a database write, so limiting after it would have left the flood vector wide open. The new `authorize(requested)` helper does sign-in check → rate limit → upsert in that order and returns either the user row or a plain-language error, replacing the old `requireUser()`. Its return type is written out explicitly (`Authorized | ActionError`) rather than inferred: an inferred union puts an optional `error` key on the success branch too, which silently stops `"error" in result` from narrowing.
+
+Second, the thread page is a server component, not a route handler, so `protect()` attaches through `@arcjet/next`'s `request()` helper. Both `generateMetadata` and the page render need the answer, and calling `protect()` in each would spend two tokens per page view — so the check is wrapped in React's `cache()`, exactly like `loadThread` already is. Measured and confirmed: one page view = one Arcjet decision. A denied read renders a plain "Too many requests" screen rather than a raw error or a misleading not-found. One honest limitation: a server component can't set an HTTP status, so that screen returns `200`, not `429`.
+
+That screen was the third copy of the same centered-message layout (`not-found.tsx` and `error.tsx` were the first two), so per the no-copy-paste rule it became `components/message-screen.tsx`, and both existing screens were refactored onto it. The shared action-button classes live there too, as `messageScreenActionClass`.
+
+Verified: `tsc --noEmit`, `eslint .`, `prettier --check .`, `next build` all clean. Against a running dev server, with a real thread id: **the read limit genuinely fires** — 150 parallel requests returned 100 rendered and 50 rate-limited, and the page renders normally again after the bucket refills. (Sequential `curl` never trips it, which is itself a useful signal that the budget isn't too tight for real use.) `allowRead` was instrumented and confirmed to run exactly once per page view, so the `cache()` dedupe works and a view costs one token, not two. Feature 8's read-only behavior is intact — a signed-out fetch of a real thread still renders with zero "Pick as winner" buttons. `/arena`, `/leaderboard`, `/models` return `200`; a made-up thread id still `404`s. `POST /api/chat` returns `401` signed-out, which also proves the new `sensitiveInfo` rule constructs without throwing (an unsupported `deny` entry throws at client construction).
+
+**Live check passed (2026-08-11).** The two things that genuinely couldn't be reached from a terminal — the card-number denial and the server-action limit, both behind a signed-in Clerk session that `detectBot` blocks `curl` from faking — were confirmed by a real browser pass, then read back from the Arcjet site itself (`arcjet auth login` via the device flow, then `requests list --site-id site_01kzksm2t0eqmb532axepsmfay`). The decision timeline says all three plainly:
+
+- **`REASON_SENSITIVE_INFO` / `DENY` on `/api/chat`, five times.** Three of them land in the same millisecond (`19:25:02.383/.384/.384`) — that's one prompt fanning out to three models and _all three_ being blocked before any model was called, which is exactly the intent: the rule sits in front of the fan-out, not behind it.
+- **The action limit never bit during real use.** Every `request()`-helper decision interleaved through the browser session (`19:25:02` → `19:25:13`) came back `ALLOW`. The write path ran normally alongside the blocked prompts. This is the "chat's limit should bite first" design holding up against actual traffic rather than a bench test.
+- **The read limit fires and recovers.** Eleven `RATE_LIMIT` / `DENY` decisions clustered inside one second (`19:18:53.582` → `19:18:54.28`) are the tail of the 150-parallel flood — the CLI returns only the most recent 25, so the rest were pushed out of the window — and everything from `19:19:23` onward is `ALLOW` again.
+
+One limitation of that read-back, recorded so nobody over-reads it later: both `ajActions` and `ajPublicRead` reach Arcjet through the `request()` helper, which carries no path, and both declare the same two rule types (`shield` + `rate_limit`). So the console can't attribute a `(no path)` decision to the server actions versus the thread page — only the timing and the surrounding traffic distinguish them. If that attribution ever matters, the fix is separate Arcjet **sites**, not separate clients.
+
+- [x] Decide the approach (report + per-feature recommend/rule-out)
+- [x] Build it: `sensitiveInfo` (card numbers) on `/api/chat`
+- [x] Build it: per-person rate limit on the server actions, gated before the first write
+- [x] Build it: IP-keyed read limit on the public thread page, one decision per view
+- [x] Build it: shared `MessageScreen` component, `not-found`/`error` refactored onto it
+- [x] Verify: checks clean, read limit trips and recovers live, route smoke-checks pass
+- [x] Live check passed (2026-08-11): all three confirmed against the real Arcjet site — see the decision timeline below
 
 ## Slice 4: Leaderboard
 
