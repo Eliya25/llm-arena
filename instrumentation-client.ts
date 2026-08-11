@@ -19,6 +19,11 @@ if (!key) {
     capture_exceptions: true,
     // Enable session recording with inputs unmasked (per project spec)
     session_recording: { maskAllInputs: false },
+    // This project uses no feature flags or surveys, and PostHog has no
+    // remote config artifact for it — fetching one just 404s in the console
+    // on every load. Skip the fetch entirely; remove this line if feature
+    // flags are ever adopted.
+    advanced_disable_flags: true,
     // Turn on debug in development mode
     debug: process.env.NODE_ENV === "development",
   });
