@@ -14,10 +14,15 @@ export default async function ModelsPage() {
 
   return (
     <AppShell breadcrumb="Models" threads={threads}>
-      <div className="mx-auto flex max-w-4xl flex-col gap-6 px-6 py-10">
+      <div className="mx-auto flex max-w-5xl flex-col gap-8 px-4 py-10 sm:px-8 sm:py-14">
         <div>
-          <h1 className="font-display text-3xl font-medium">Models</h1>
-          <p className="mt-1 text-sm text-muted-foreground">
+          <p className="mb-3 font-mono text-[10px] tracking-[0.2em] text-primary uppercase">
+            Free-tier field
+          </p>
+          <h1 className="font-display text-4xl font-semibold tracking-[-0.03em] sm:text-5xl">
+            Models
+          </h1>
+          <p className="mt-2 max-w-xl text-sm leading-6 text-muted-foreground">
             The full free-tier catalog, browsable without opening the picker.
           </p>
         </div>
@@ -28,11 +33,11 @@ export default async function ModelsPage() {
             moment.
           </p>
         ) : (
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
             {catalog.map((model) => (
               <div
                 key={model.id}
-                className="flex flex-col gap-3 rounded-lg border border-border bg-card p-4"
+                className="soft-shadow group flex flex-col gap-4 rounded-xl border border-border bg-card/90 p-5 transition-[transform,border-color] hover:-translate-y-0.5 hover:border-primary/35"
               >
                 <div className="flex items-center gap-2">
                   <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-secondary font-mono text-xs">

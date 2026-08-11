@@ -117,10 +117,10 @@ export function PromptBox({
   const canSend = prompt.trim().length > 0 && selectedModels.length > 0;
 
   return (
-    <div className="mx-auto w-full max-w-3xl shrink-0 px-6 pb-6">
-      <div className="rounded-lg border border-border bg-card p-4">
+    <div className="mx-auto w-full max-w-4xl shrink-0 px-4 pb-4 sm:px-6 sm:pb-6">
+      <div className="soft-shadow rounded-2xl border border-border/90 bg-card/95 p-2 backdrop-blur-xl focus-within:border-primary/60 focus-within:ring-4 focus-within:ring-primary/8 sm:p-3">
         <textarea
-          rows={2}
+          rows={3}
           value={prompt}
           onChange={(event) => onPromptChange(event.target.value)}
           onKeyDown={(event) => {
@@ -130,9 +130,9 @@ export function PromptBox({
             }
           }}
           placeholder={placeholder}
-          className="w-full resize-none bg-transparent text-sm outline-none placeholder:text-muted-foreground disabled:opacity-50"
+          className="w-full resize-none bg-transparent px-2 py-2 text-[15px] leading-6 outline-none placeholder:text-muted-foreground disabled:opacity-50"
         />
-        <div className="mt-3 flex flex-wrap items-center gap-2">
+        <div className="mt-1 flex flex-wrap items-center gap-2 border-t border-border/70 pt-3">
           {selectedModels.length === 0 && catalog.length === 0 ? (
             <span className="text-sm text-muted-foreground">
               Couldn&apos;t load the model catalog right now.
@@ -141,7 +141,7 @@ export function PromptBox({
             selectedModels.map((model) => (
               <span
                 key={model.id}
-                className="flex items-center gap-1.5 rounded-full border border-border bg-secondary py-1 pr-3 pl-1 text-sm text-secondary-foreground"
+                className="flex items-center gap-1.5 rounded-lg border border-border bg-secondary/80 py-1 pr-2 pl-1 text-xs text-secondary-foreground"
               >
                 <Popover
                   open={openPicker === model.id}
@@ -187,7 +187,7 @@ export function PromptBox({
             >
               <PopoverTrigger
                 aria-label={atCap ? "Change models" : "Add model"}
-                className="flex items-center gap-1 rounded-full border border-border px-3 py-1 text-sm font-medium hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+                className="flex items-center gap-1 rounded-lg border border-dashed border-border px-3 py-1.5 text-xs font-medium text-muted-foreground hover:border-primary/50 hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {atCap ? (
                   <Repeat2 className="h-3.5 w-3.5" aria-hidden />
@@ -217,15 +217,14 @@ export function PromptBox({
             aria-label="Send prompt"
             disabled={!canSend}
             onClick={onSend}
-            className="ml-auto flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
+            className="ml-auto flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground transition-[transform,background-color] hover:-translate-y-0.5 hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:translate-y-0"
           >
             <ArrowUp className="h-4 w-4" aria-hidden />
           </button>
         </div>
       </div>
-      <p className="mt-2 text-center text-xs text-muted-foreground">
-        Up to three models at a time. Every one of them is free. Press a model
-        to swap it for another.
+      <p className="mt-2 text-center font-mono text-[10px] tracking-wide text-muted-foreground">
+        UP TO 3 MODELS · FREE TO RUN · ENTER TO SEND
       </p>
     </div>
   );

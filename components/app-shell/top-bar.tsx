@@ -61,16 +61,17 @@ export function TopBar({
   showCopyLink = false,
 }: TopBarProps) {
   return (
-    <header className="flex h-14 shrink-0 items-center gap-3 border-b border-border bg-background px-4">
+    <header className="flex h-16 shrink-0 items-center gap-3 border-b border-border/80 bg-background/80 px-4 backdrop-blur-xl sm:px-5">
       <button
         type="button"
         onClick={onToggleSidebar}
         aria-label="Toggle sidebar"
-        className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md hover:bg-accent"
+        className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-transparent text-muted-foreground hover:border-border hover:bg-accent hover:text-foreground"
       >
         <PanelLeft className="h-4 w-4" aria-hidden />
       </button>
 
+      <span className="h-4 w-px bg-border" aria-hidden />
       <nav aria-label="Breadcrumb" className="min-w-0 text-sm">
         <span className="truncate font-medium text-foreground">
           {breadcrumb}

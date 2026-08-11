@@ -24,10 +24,15 @@ export default async function LeaderboardPage() {
 
   return (
     <AppShell breadcrumb="Leaderboard" threads={threads}>
-      <div className="mx-auto flex max-w-4xl flex-col gap-6 px-6 py-10">
+      <div className="mx-auto flex max-w-5xl flex-col gap-8 px-4 py-10 sm:px-8 sm:py-14">
         <div>
-          <h1 className="font-display text-3xl font-medium">Leaderboard</h1>
-          <p className="mt-1 text-sm text-muted-foreground">
+          <p className="mb-3 font-mono text-[10px] tracking-[0.2em] text-primary uppercase">
+            The record
+          </p>
+          <h1 className="font-display text-4xl font-semibold tracking-[-0.03em] sm:text-5xl">
+            Leaderboard
+          </h1>
+          <p className="mt-2 max-w-xl text-sm leading-6 text-muted-foreground">
             Every model&apos;s real record, from actual head-to-head votes.
           </p>
         </div>
