@@ -1,11 +1,15 @@
 "use server";
 
 import { auth } from "@clerk/nextjs/server";
+import { getFreeModelCatalog } from "@/lib/openrouter";
 import { prisma } from "@/lib/prisma";
 import { getPostHogClient } from "@/lib/posthog-server";
 
 const MAX_MODELS = 3;
 const THREAD_TITLE_LENGTH = 80;
+// Mirrors /api/chat's per-message cap — a turn that persistence accepts must
+// also be one streaming accepts, or the database fills with unrunnable turns.
+const MAX_PROMPT_LENGTH = 32_000;
 
 const SIGN_IN_ERROR = "Please sign in to do that.";
 const GENERIC_ERROR = "Something went wrong saving this. Please try again.";
@@ -66,6 +70,18 @@ export async function createTurn(input: {
       modelIds.length > MAX_MODELS
     ) {
       return { error: GENERIC_ERROR };
+    }
+    if (prompt.length > MAX_PROMPT_LENGTH) {
+      return { error: "That prompt is too long. Please shorten it." };
+    }
+
+    // Same allowlist /api/chat enforces: only models from the server's own
+    // free-tier catalog. A failed catalog fetch fails closed, like the route.
+    const catalog = await getFreeModelCatalog();
+    if (!modelIds.every((id) => catalog.some((model) => model.id === id))) {
+      return {
+        error: "Those models aren't available here. Pick from the model list.",
+      };
     }
 
     const user = await requireUser();
