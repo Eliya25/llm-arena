@@ -16,17 +16,17 @@ There are rough hand-drawn sketches for the arena screen, the leaderboard, and t
 
 ## At a glance
 
-| #   | Feature                                     | Phase      | Status                     |
-| --- | ------------------------------------------- | ---------- | -------------------------- |
-| 1   | Connecting to a model                       | Foundation | done                       |
-| 2   | Coding standards & tooling                  | Foundation | done                       |
-| 3   | Data model                                  | Foundation | done                       |
-| 4   | Design & look                               | Foundation | done                       |
-| 5   | Model picker                                | Slice 1    | done                       |
-| 6   | Send a prompt, parallel streams, and voting | Slice 1    | done                       |
-| 7   | App shell & thread history                  | Slice 2    | done                       |
-| 8   | Public thread visibility & sharing          | Slice 3    | built, awaiting live check |
-| 9   | Leaderboard: global & personal              | Slice 4    | not started                |
+| #   | Feature                                     | Phase      | Status  |
+| --- | ------------------------------------------- | ---------- | ------- |
+| 1   | Connecting to a model                       | Foundation | done    |
+| 2   | Coding standards & tooling                  | Foundation | done    |
+| 3   | Data model                                  | Foundation | done    |
+| 4   | Design & look                               | Foundation | done    |
+| 5   | Model picker                                | Slice 1    | done    |
+| 6   | Send a prompt, parallel streams, and voting | Slice 1    | done    |
+| 7   | App shell & thread history                  | Slice 2    | done    |
+| 8   | Public thread visibility & sharing          | Slice 3    | done    |
+| 9   | Leaderboard: global & personal              | Slice 4    | planned |
 
 ## Foundation
 
@@ -256,7 +256,8 @@ Verified: `tsc --noEmit`, `eslint .`, `prettier --check .`, `next build` all cle
 - [x] Build it: public read + `isOwner` on the thread page
 - [x] Build it: `readOnly` mode in `ArenaClient`
 - [x] Build it: copy-link button + `generateMetadata`
-- [x] Verify: checks + signed-out `curl` of a real thread (200, read-only, real title) and fake id (404) — browser pass still open (clipboard + incognito read-only view)
+- [x] Verify: checks + signed-out `curl` of a real thread (200, read-only, real title) and fake id (404)
+- [x] Live check passed (2026-08-11): the user copied a thread link and opened it in a different browser — the shared chat rendered, confirming copy-link and the public read-only view end to end
 
 ## Slice 4: Leaderboard
 
@@ -264,8 +265,19 @@ Verified: `tsc --noEmit`, `eslint .`, `prettier --check .`, `next build` all cle
 
 Two leaderboards from the same votes, one for everyone, one just for the signed-in user. Each row's win rate is the big, bold number, in the accent color, with a small bar next to it, always written as "won 4 of 5," never a bare percentage or a made-up score. Smaller, quieter numbers underneath for average speed and time-to-first-token, each clearly labeled. No cost or "cheapest" stat, every model is free, so that number never means anything here. First place gets a subtle highlight, nobody else does.
 
-- [ ] Decide the approach
-- [ ] Build it
+**Decided (2026-08-11), not yet built.** The plan:
+
+- **One aggregation, two scopes.** A single server-side function in the leaderboard feature folder computes rows from real votes, taking an optional owner filter: global = all votes, personal = votes on the signed-in user's own threads. Per model: **wins** = voted turns its message won; **total** = voted turns it participated in — the exact definition Feature 7's thread badges already decided, kept consistent app-wide. **Average tok/s and average time-to-first-token** come from _all_ of that model's `SUCCESS` messages (more data than voted turns alone, and every number is a real stored measurement); a model with no measured value for a metric shows nothing there, never a dash or a zero.
+- **Query shape:** composed Prisma queries assembled functionally in TS — voted turns with their messages and vote (small data, votes are the scarce thing), plus a `groupBy` on `Message` for the metric averages. No raw SQL needed at this size, and no new API route: the page is a server component that calls the function directly, exactly like the catalog.
+- **Ranking:** wins descending — the raw count is the honest headline, matching "won X of Y" — tie-broken by win rate, then model name for stability. Only models with at least one voted turn appear; an empty board says plainly "No votes yet. Pick some winners in the arena."
+- **The toggle becomes real:** the page server-fetches both scopes (cheap at this size) and a small client component switches between them — Global default; Personal shows a sign-in prompt when signed out. The dead Global/Personal buttons and all placeholder rows are deleted.
+- **Design, per Feature 4's already-decided system:** each row's headline is the win-tally signature element — "Won 4 of 5" as the big Fraunces numeral in rust with the small proportional rust bar beside it (the sketch's bare `71%` stays overruled, as recorded under Feature 7). Beneath it, the quieter labeled mono numbers: avg tok/s, avg time-to-first-token. First place gets one subtle highlight and nobody else does. Model names resolve from the live catalog with the raw id as fallback, same as the thread page. `frontend-design` gets invoked at build time per CLAUDE.md.
+- **Verification:** typecheck/lint/format/build, then `curl` the page and check the server-rendered rows against a direct database query computing the same numbers by hand — the counts must match exactly. Browser pass covers the toggle and signed-out Personal state.
+
+- [x] Decide the approach
+- [ ] Build it: the aggregation function (global + personal scopes)
+- [ ] Build it: the real leaderboard page — tally rows, working toggle, empty states
+- [ ] Verify: checks, server-rendered numbers cross-checked against the database, browser pass
 
 ## Not doing right now
 
