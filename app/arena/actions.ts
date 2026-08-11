@@ -1,6 +1,8 @@
 "use server";
 
 import { auth } from "@clerk/nextjs/server";
+import { request as arcjetRequest } from "@arcjet/next";
+import { ajActions } from "@/lib/arcjet";
 import { getFreeModelCatalog } from "@/lib/openrouter";
 import { prisma } from "@/lib/prisma";
 import { getPostHogClient } from "@/lib/posthog-server";
@@ -13,8 +15,19 @@ const MAX_PROMPT_LENGTH = 32_000;
 
 const SIGN_IN_ERROR = "Please sign in to do that.";
 const GENERIC_ERROR = "Something went wrong saving this. Please try again.";
+const RATE_LIMIT_ERROR =
+  "You're doing that too quickly. Please wait a moment and try again.";
+
+// Weighted costs against the shared per-person bucket in lib/arcjet.ts:
+// creating a turn writes a thread, a turn, and a row per model, so it costs
+// more than the single-row updates that follow it.
+const COST_CREATE_TURN = 5;
+const COST_SINGLE_WRITE = 1;
 
 type ActionError = { error: string };
+// Explicit, not inferred: an inferred union puts an optional `error` key on the
+// success branch too, which stops `"error" in result` from narrowing.
+type Authorized = { user: { id: string; clerkId: string } };
 
 export type CreateTurnResult =
   | {
@@ -46,14 +59,34 @@ export async function getOwnThreads(): Promise<ThreadListItem[]> {
   }
 }
 
-async function requireUser() {
+// Sign-in check plus the per-person rate limit, in that order, before the
+// database is touched at all — the user upsert below is itself a write, so
+// gating after it would leave the flood vector open (docs/scope.md Feature 10).
+// Returns either the caller's user row or a plain-language error to hand back.
+async function authorize(requested: number): Promise<Authorized | ActionError> {
   const { userId } = await auth();
-  if (!userId) return null;
-  return prisma.user.upsert({
+  if (!userId) return { error: SIGN_IN_ERROR };
+
+  const decision = await ajActions.protect(await arcjetRequest(), {
+    userId,
+    requested,
+  });
+  if (decision.isDenied()) {
+    console.error("Arcjet denied server action", {
+      reason: decision.reason,
+      userId,
+    });
+    return {
+      error: decision.reason.isRateLimit() ? RATE_LIMIT_ERROR : GENERIC_ERROR,
+    };
+  }
+
+  const user = await prisma.user.upsert({
     where: { clerkId: userId },
     create: { clerkId: userId },
     update: {},
   });
+  return { user };
 }
 
 export async function createTurn(input: {
@@ -84,8 +117,9 @@ export async function createTurn(input: {
       };
     }
 
-    const user = await requireUser();
-    if (!user) return { error: SIGN_IN_ERROR };
+    const authorized = await authorize(COST_CREATE_TURN);
+    if ("error" in authorized) return authorized;
+    const { user } = authorized;
 
     // A follow-up must land in a thread this user actually owns.
     const thread = input.threadId
@@ -124,12 +158,18 @@ export async function createTurn(input: {
   }
 }
 
-async function findOwnedMessage(messageId: string) {
-  const user = await requireUser();
-  if (!user) return null;
-  return prisma.message.findFirst({
-    where: { id: messageId, turn: { thread: { userId: user.id } } },
+async function findOwnedMessage(
+  messageId: string,
+): Promise<{ messageId: string } | ActionError> {
+  const authorized = await authorize(COST_SINGLE_WRITE);
+  if ("error" in authorized) return authorized;
+
+  const message = await prisma.message.findFirst({
+    where: { id: messageId, turn: { thread: { userId: authorized.user.id } } },
+    select: { id: true },
   });
+  if (!message) return { error: SIGN_IN_ERROR };
+  return { messageId: message.id };
 }
 
 export async function completeMessage(input: {
@@ -140,8 +180,8 @@ export async function completeMessage(input: {
   totalTokens?: number;
 }): Promise<{ ok: true } | ActionError> {
   try {
-    const message = await findOwnedMessage(input.messageId);
-    if (!message) return { error: SIGN_IN_ERROR };
+    const found = await findOwnedMessage(input.messageId);
+    if ("error" in found) return found;
 
     const asInt = (value: number | undefined) =>
       value !== undefined && Number.isFinite(value) && value >= 0
@@ -149,7 +189,7 @@ export async function completeMessage(input: {
         : null;
 
     await prisma.message.update({
-      where: { id: message.id },
+      where: { id: found.messageId },
       data: {
         content: input.content,
         status: "SUCCESS",
@@ -174,11 +214,11 @@ export async function failMessage(input: {
   messageId: string;
 }): Promise<{ ok: true } | ActionError> {
   try {
-    const message = await findOwnedMessage(input.messageId);
-    if (!message) return { error: SIGN_IN_ERROR };
+    const found = await findOwnedMessage(input.messageId);
+    if ("error" in found) return found;
 
     await prisma.message.update({
-      where: { id: message.id },
+      where: { id: found.messageId },
       data: { status: "FAILED" },
     });
     return { ok: true };
@@ -193,8 +233,9 @@ export async function castVote(input: {
   messageId: string;
 }): Promise<{ ok: true } | ActionError> {
   try {
-    const user = await requireUser();
-    if (!user) return { error: SIGN_IN_ERROR };
+    const authorized = await authorize(COST_SINGLE_WRITE);
+    if ("error" in authorized) return authorized;
+    const { user } = authorized;
 
     const turn = await prisma.turn.findFirst({
       where: { id: input.turnId, thread: { userId: user.id } },
