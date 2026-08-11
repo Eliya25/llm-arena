@@ -186,6 +186,11 @@ export function ArenaClient({
     new Map<number, Map<string, Promise<boolean>>>(),
   );
 
+  // Bumped every time "New chat" clears the arena. A createTurn still in
+  // flight when that happens belongs to the conversation the user just walked
+  // away from, so its callback must not adopt that thread as the current one.
+  const sessionRef = useRef(0);
+
   // Hands the sidebar's "New chat" a way to clear this arena in place, since a
   // link to /arena can't be trusted to remount it once the first send has
   // rewritten the URL (see components/app-shell/new-chat-context.tsx). Only the
@@ -200,6 +205,7 @@ export function ArenaClient({
     if (initialThreadId !== null) return;
     const ref = resetRef;
     ref.current = () => {
+      sessionRef.current += 1;
       setTurns([]);
       setThreadId(null);
       setPrompt("");
@@ -521,6 +527,7 @@ export function ArenaClient({
     // The database write runs alongside the streams, never in front of them —
     // a slow write must not delay the first token.
     const isNewThread = threadId === null;
+    const session = sessionRef.current;
     const persistence = createTurn({
       threadId,
       prompt: promptText,
@@ -528,19 +535,32 @@ export function ArenaClient({
     });
     persistenceRef.current.set(turnKey, persistence);
     void persistence.then((result) => {
+      // "New chat" was pressed while this write was in flight, so the turn on
+      // screen is gone. The thread it created is real and still belongs in the
+      // sidebar — but adopting it here would silently make the next prompt a
+      // follow-up in the conversation the user just walked away from, and
+      // would point the address bar back at it.
+      const superseded = sessionRef.current !== session;
+
       if ("error" in result) {
-        patchTurn(turnKey, { saveFailed: true });
-      } else {
-        setThreadId(result.threadId);
-        patchTurn(turnKey, { turnId: result.turnId });
-        if (isNewThread) {
-          // The thread now has a real address. replaceState, not a router
-          // navigation — navigating would swap the page tree and kill the
-          // streams still running. A later refresh lands on the thread page.
-          window.history.replaceState(null, "", `/arena/${result.threadId}`);
-          // And it appears in the sidebar right away.
-          refreshThreads();
-        }
+        if (!superseded) patchTurn(turnKey, { saveFailed: true });
+        return;
+      }
+
+      if (superseded) {
+        if (isNewThread) refreshThreads();
+        return;
+      }
+
+      setThreadId(result.threadId);
+      patchTurn(turnKey, { turnId: result.turnId });
+      if (isNewThread) {
+        // The thread now has a real address. replaceState, not a router
+        // navigation — navigating would swap the page tree and kill the
+        // streams still running. A later refresh lands on the thread page.
+        window.history.replaceState(null, "", `/arena/${result.threadId}`);
+        // And it appears in the sidebar right away.
+        refreshThreads();
       }
     });
 
