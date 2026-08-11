@@ -31,29 +31,34 @@ async function computeRows(clerkId: string | null): Promise<LeaderboardRow[]> {
     }),
   ]);
 
-  const tallies = new Map<string, { wins: number; total: number }>();
-  for (const turn of votedTurns) {
+  // One record per model per voted turn. Flattening first turns the tally into
+  // a plain read over a list, instead of a nested loop mutating a shared map.
+  const participations = votedTurns.flatMap((turn) => {
     const winnerModel = turn.messages.find(
       (message) => message.id === turn.vote?.messageId,
     )?.model;
-    for (const model of new Set(turn.messages.map((m) => m.model))) {
-      const tally = tallies.get(model) ?? { wins: 0, total: 0 };
-      tallies.set(model, {
-        wins: tally.wins + (model === winnerModel ? 1 : 0),
-        total: tally.total + 1,
-      });
-    }
-  }
+    // Deduplicated, so a model that somehow answered one turn twice still
+    // counts as a single participation in it.
+    const models = [...new Set(turn.messages.map((message) => message.model))];
+    return models.map((model) => ({ model, won: model === winnerModel }));
+  });
 
   const averages = new Map(metrics.map((entry) => [entry.model, entry._avg]));
 
-  return [...tallies.entries()]
-    .map(([modelId, { wins, total }]) => {
+  // Counted by filtering per model rather than folding into a mutable
+  // accumulator. That's a pass per model instead of one pass total, which is
+  // the right trade here: votes are the scarce data (see the query above), and
+  // the wins/total rule stays readable as the definition it is.
+  return [...new Set(participations.map((entry) => entry.model))]
+    .map((modelId) => {
+      const forModel = participations.filter(
+        (entry) => entry.model === modelId,
+      );
       const avg = averages.get(modelId);
       return {
         modelId,
-        wins,
-        total,
+        wins: forModel.filter((entry) => entry.won).length,
+        total: forModel.length,
         avgTokensPerSecond:
           avg?.tokensPerSecond != null ? Math.round(avg.tokensPerSecond) : null,
         avgTimeToFirstTokenMs:
