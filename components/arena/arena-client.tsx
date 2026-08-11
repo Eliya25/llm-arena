@@ -80,6 +80,9 @@ const SUPERSEDED_REASON = "superseded";
 // Matches the server's per-message content cap, so a giant answer in the
 // history gets trimmed instead of failing the whole follow-up.
 const MAX_HISTORY_CONTENT = 32_000;
+// Matches the server's message-count cap — a long thread keeps the most
+// recent exchanges and drops the oldest instead of failing every lane.
+const MAX_HISTORY_MESSAGES = 40;
 
 // Only measured numbers appear — a metric that hasn't arrived yet is simply
 // absent, never a dash or an invented value.
@@ -150,6 +153,15 @@ export function ArenaClient({
   );
   // Live stream controllers, so a new message can stop lanes still running.
   const controllersRef = useRef(new Map<string, AbortController>());
+  // Completion/failure writes still in flight per turn — a lane can show
+  // "done" on screen before its SUCCESS row lands, and a vote cast in that
+  // gap would be rejected by the server. Voting waits for these first.
+  const outcomeWritesRef = useRef(new Map<number, Promise<void>[]>());
+
+  function trackOutcome(turnKey: number, write: Promise<void>) {
+    const writes = outcomeWritesRef.current.get(turnKey) ?? [];
+    outcomeWritesRef.current.set(turnKey, [...writes, write]);
+  }
 
   function patchTurn(turnKey: number, patch: Partial<TurnView>) {
     setTurns((current) =>
@@ -201,7 +213,7 @@ export function ArenaClient({
       }
     }
     history.push({ role: "user", content: promptText });
-    return history;
+    return history.slice(-MAX_HISTORY_MESSAGES);
   }
 
   async function persistOutcome(
@@ -268,7 +280,10 @@ export function ArenaClient({
           // Non-JSON error body — keep the plain default message.
         }
         patchLane(turnKey, modelId, { status: "error", errorMessage: message });
-        void persistOutcome(turnKey, modelId, { kind: "failed" });
+        trackOutcome(
+          turnKey,
+          persistOutcome(turnKey, modelId, { kind: "failed" }),
+        );
         return;
       }
 
@@ -343,10 +358,10 @@ export function ArenaClient({
         totalTokens: completionTokens,
         tokensPerSecond,
       });
-      void persistOutcome(turnKey, modelId, {
-        kind: "done",
-        lane: finishedLane,
-      });
+      trackOutcome(
+        turnKey,
+        persistOutcome(turnKey, modelId, { kind: "done", lane: finishedLane }),
+      );
 
       posthog.capture("arena_answer_finished", {
         model: modelId,
@@ -362,7 +377,10 @@ export function ArenaClient({
             ? "Stopped so your next message could go out."
             : "The connection dropped. Please try again.";
       patchLane(turnKey, modelId, { status: "error", errorMessage: message });
-      void persistOutcome(turnKey, modelId, { kind: "failed" });
+      trackOutcome(
+        turnKey,
+        persistOutcome(turnKey, modelId, { kind: "failed" }),
+      );
     } finally {
       clearTimeout(stallTimer);
       controllersRef.current.delete(`${turnKey}:${modelId}`);
@@ -492,6 +510,14 @@ export function ArenaClient({
     }
     const messageId = result.messageIds[modelId];
     if (!messageId) return;
+
+    // A lane can read "done" on screen before its SUCCESS row is written —
+    // wait for the turn's in-flight writes so the server sees the same
+    // finished answers the user just did. A failed write falls through to
+    // castVote's own plain-language error.
+    await Promise.all(outcomeWritesRef.current.get(turnKey) ?? []).catch(
+      () => {},
+    );
 
     const outcome = await castVote({ turnId: result.turnId, messageId });
     if ("error" in outcome) {
