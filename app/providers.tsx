@@ -3,6 +3,7 @@
 import { useEffect, useRef } from "react";
 import posthog from "posthog-js";
 import { useUser } from "@clerk/nextjs";
+import { ThemeProvider } from "next-themes";
 
 // PostHog is initialized in instrumentation-client.ts (Next.js 15.3+ pattern).
 // Never combine that approach with a PostHogProvider here.
@@ -31,9 +32,9 @@ function IdentifyUser() {
 
 export function Providers({ children }: { children: React.ReactNode }) {
   return (
-    <>
+    <ThemeProvider attribute="class" defaultTheme="system" enableSystem>
       <IdentifyUser />
       {children}
-    </>
+    </ThemeProvider>
   );
 }
