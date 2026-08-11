@@ -223,7 +223,13 @@ export function ArenaClient({
       }
     }
     history.push({ role: "user", content: promptText });
-    return history.slice(-MAX_HISTORY_MESSAGES);
+    // The cap can land mid-exchange, stranding an assistant answer whose
+    // question was cut off — drop it so history always opens with a user
+    // message and every retained answer keeps its originating question.
+    const trimmed = history.slice(-MAX_HISTORY_MESSAGES);
+    return trimmed.slice(
+      trimmed.findIndex((message) => message.role === "user"),
+    );
   }
 
   // Resolves to whether the outcome actually reached the database — a handled
