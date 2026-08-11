@@ -31,6 +31,11 @@ type Lane = {
   ttftMs?: number;
   tokensPerSecond?: number;
   totalTokens?: number;
+  // Live approximations while the stream runs, always rendered with a "~" so
+  // an estimate never poses as a measurement. Cleared when the stream ends
+  // and the exact usage-based numbers take over.
+  liveTokensPerSecond?: number;
+  liveTokens?: number;
 };
 
 type TurnView = {
@@ -83,18 +88,36 @@ const MAX_HISTORY_CONTENT = 32_000;
 // Matches the server's message-count cap — a long thread keeps the most
 // recent exchanges and drops the oldest instead of failing every lane.
 const MAX_HISTORY_MESSAGES = 40;
+// Rough characters-per-token for the live streaming readout only — the final
+// numbers always come from OpenRouter's real usage block.
+const CHARS_PER_TOKEN = 4;
 
-// Only measured numbers appear — a metric that hasn't arrived yet is simply
-// absent, never a dash or an invented value.
+// Metrics tick live while a lane streams — approximations carry a "~" so an
+// estimate never poses as a measurement; once the stream ends only the exact
+// usage-based numbers remain. A metric that hasn't arrived is simply absent,
+// never a dash or an invented value.
 function laneMetrics(lane: Lane): string {
+  const streaming = lane.status === "streaming";
   const parts = [
     lane.ttftMs !== undefined ? `${lane.ttftMs}ms to first token` : null,
-    lane.tokensPerSecond !== undefined ? `${lane.tokensPerSecond} tok/s` : null,
-    lane.totalTokens !== undefined ? `${lane.totalTokens} tokens` : null,
+    streaming
+      ? lane.liveTokensPerSecond !== undefined
+        ? `~${lane.liveTokensPerSecond} tok/s`
+        : null
+      : lane.tokensPerSecond !== undefined
+        ? `${lane.tokensPerSecond} tok/s`
+        : null,
+    streaming
+      ? lane.liveTokens !== undefined
+        ? `~${lane.liveTokens} tokens`
+        : null
+      : lane.totalTokens !== undefined
+        ? `${lane.totalTokens} tokens`
+        : null,
   ].filter((part): part is string => part !== null);
 
   if (parts.length === 0) {
-    return lane.status === "streaming" ? "waiting for first token…" : "";
+    return streaming ? "waiting for first token…" : "";
   }
   return parts.join(" · ");
 }
@@ -345,8 +368,18 @@ export function ArenaClient({
               });
             }
             finalText += delta;
+            // Live readout: estimated tokens from streamed characters over
+            // the measured elapsed window. The rate waits half a second so
+            // the first chunks don't flash a wild number.
+            const liveTokens = Math.round(finalText.length / CHARS_PER_TOKEN);
+            const elapsedSeconds = (performance.now() - firstTokenAt) / 1000;
             patchLane(turnKey, modelId, (lane) => ({
               text: lane.text + delta,
+              liveTokens,
+              liveTokensPerSecond:
+                elapsedSeconds >= 0.5
+                  ? Math.round(liveTokens / elapsedSeconds)
+                  : lane.liveTokensPerSecond,
             }));
           }
 
@@ -381,6 +414,8 @@ export function ArenaClient({
         status: "done",
         totalTokens: completionTokens,
         tokensPerSecond,
+        liveTokens: undefined,
+        liveTokensPerSecond: undefined,
       });
       trackOutcome(
         turnKey,
@@ -514,6 +549,8 @@ export function ArenaClient({
       ttftMs: undefined,
       tokensPerSecond: undefined,
       totalTokens: undefined,
+      liveTokens: undefined,
+      liveTokensPerSecond: undefined,
     });
     void streamModel(
       turnKey,
