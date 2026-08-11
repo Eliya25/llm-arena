@@ -153,14 +153,24 @@ export function ArenaClient({
   );
   // Live stream controllers, so a new message can stop lanes still running.
   const controllersRef = useRef(new Map<string, AbortController>());
-  // Completion/failure writes still in flight per turn — a lane can show
-  // "done" on screen before its SUCCESS row lands, and a vote cast in that
-  // gap would be rejected by the server. Voting waits for these first.
-  const outcomeWritesRef = useRef(new Map<number, Promise<void>[]>());
+  // Completion/failure writes per turn and model — a lane can show "done" on
+  // screen before its SUCCESS row lands, and a vote cast in that gap would be
+  // rejected by the server. Each write resolves to whether it actually
+  // persisted, so voting can tell "still saving" from "failed to save".
+  const outcomeWritesRef = useRef(
+    new Map<number, Map<string, Promise<boolean>>>(),
+  );
 
-  function trackOutcome(turnKey: number, write: Promise<void>) {
-    const writes = outcomeWritesRef.current.get(turnKey) ?? [];
-    outcomeWritesRef.current.set(turnKey, [...writes, write]);
+  function trackOutcome(
+    turnKey: number,
+    modelId: string,
+    write: Promise<boolean>,
+  ) {
+    const writes =
+      outcomeWritesRef.current.get(turnKey) ??
+      new Map<string, Promise<boolean>>();
+    writes.set(modelId, write);
+    outcomeWritesRef.current.set(turnKey, writes);
   }
 
   function patchTurn(turnKey: number, patch: Partial<TurnView>) {
@@ -216,28 +226,35 @@ export function ArenaClient({
     return history.slice(-MAX_HISTORY_MESSAGES);
   }
 
+  // Resolves to whether the outcome actually reached the database — a handled
+  // { error } from the server action is a failed write, not a persisted one.
+  // Never rejects, so callers can await it without a catch.
   async function persistOutcome(
     turnKey: number,
     modelId: string,
     outcome: { kind: "done"; lane: Lane } | { kind: "failed" },
-  ) {
-    const pending = persistenceRef.current.get(turnKey);
-    if (!pending) return;
-    const result = await pending;
-    if ("error" in result) return;
-    const messageId = result.messageIds[modelId];
-    if (!messageId) return;
+  ): Promise<boolean> {
+    try {
+      const pending = persistenceRef.current.get(turnKey);
+      if (!pending) return false;
+      const result = await pending;
+      if ("error" in result) return false;
+      const messageId = result.messageIds[modelId];
+      if (!messageId) return false;
 
-    if (outcome.kind === "done") {
-      await completeMessage({
-        messageId,
-        content: outcome.lane.text,
-        ttftMs: outcome.lane.ttftMs,
-        tokensPerSecond: outcome.lane.tokensPerSecond,
-        totalTokens: outcome.lane.totalTokens,
-      });
-    } else {
-      await failMessage({ messageId });
+      const written =
+        outcome.kind === "done"
+          ? await completeMessage({
+              messageId,
+              content: outcome.lane.text,
+              ttftMs: outcome.lane.ttftMs,
+              tokensPerSecond: outcome.lane.tokensPerSecond,
+              totalTokens: outcome.lane.totalTokens,
+            })
+          : await failMessage({ messageId });
+      return !("error" in written);
+    } catch {
+      return false;
     }
   }
 
@@ -282,6 +299,7 @@ export function ArenaClient({
         patchLane(turnKey, modelId, { status: "error", errorMessage: message });
         trackOutcome(
           turnKey,
+          modelId,
           persistOutcome(turnKey, modelId, { kind: "failed" }),
         );
         return;
@@ -360,6 +378,7 @@ export function ArenaClient({
       });
       trackOutcome(
         turnKey,
+        modelId,
         persistOutcome(turnKey, modelId, { kind: "done", lane: finishedLane }),
       );
 
@@ -379,6 +398,7 @@ export function ArenaClient({
       patchLane(turnKey, modelId, { status: "error", errorMessage: message });
       trackOutcome(
         turnKey,
+        modelId,
         persistOutcome(turnKey, modelId, { kind: "failed" }),
       );
     } finally {
@@ -512,12 +532,34 @@ export function ArenaClient({
     if (!messageId) return;
 
     // A lane can read "done" on screen before its SUCCESS row is written —
-    // wait for the turn's in-flight writes so the server sees the same
-    // finished answers the user just did. A failed write falls through to
-    // castVote's own plain-language error.
-    await Promise.all(outcomeWritesRef.current.get(turnKey) ?? []).catch(
-      () => {},
+    // wait for the turn's writes so the server sees the same finished answers
+    // the user just did. A write that failed (handled { error }, not just
+    // in-flight) gets one fresh attempt here, since the earlier failure may
+    // have been transient; a lane with no tracked write was restored from the
+    // database and is already persisted.
+    const writes = outcomeWritesRef.current.get(turnKey);
+    const doneLanes = turn.lanes.filter((lane) => lane.status === "done");
+    const persisted = await Promise.all(
+      doneLanes.map(async (lane) => {
+        const tracked = writes?.get(lane.modelId);
+        if (!tracked || (await tracked)) return true;
+        const retry = persistOutcome(turnKey, lane.modelId, {
+          kind: "done",
+          lane,
+        });
+        trackOutcome(turnKey, lane.modelId, retry);
+        return retry;
+      }),
     );
+    const pickedSaved =
+      persisted[doneLanes.findIndex((lane) => lane.modelId === modelId)];
+    if (!pickedSaved || persisted.filter(Boolean).length < 2) {
+      patchTurn(turnKey, {
+        voteError:
+          "The answers didn't finish saving, so this vote can't be recorded. Please try again.",
+      });
+      return;
+    }
 
     const outcome = await castVote({ turnId: result.turnId, messageId });
     if ("error" in outcome) {
