@@ -16,17 +16,17 @@ There are rough hand-drawn sketches for the arena screen, the leaderboard, and t
 
 ## At a glance
 
-| #   | Feature                                     | Phase      | Status  |
-| --- | ------------------------------------------- | ---------- | ------- |
-| 1   | Connecting to a model                       | Foundation | done    |
-| 2   | Coding standards & tooling                  | Foundation | done    |
-| 3   | Data model                                  | Foundation | done    |
-| 4   | Design & look                               | Foundation | done    |
-| 5   | Model picker                                | Slice 1    | done    |
-| 6   | Send a prompt, parallel streams, and voting | Slice 1    | done    |
-| 7   | App shell & thread history                  | Slice 2    | done    |
-| 8   | Public thread visibility & sharing          | Slice 3    | done    |
-| 9   | Leaderboard: global & personal              | Slice 4    | planned |
+| #   | Feature                                     | Phase      | Status                     |
+| --- | ------------------------------------------- | ---------- | -------------------------- |
+| 1   | Connecting to a model                       | Foundation | done                       |
+| 2   | Coding standards & tooling                  | Foundation | done                       |
+| 3   | Data model                                  | Foundation | done                       |
+| 4   | Design & look                               | Foundation | done                       |
+| 5   | Model picker                                | Slice 1    | done                       |
+| 6   | Send a prompt, parallel streams, and voting | Slice 1    | done                       |
+| 7   | App shell & thread history                  | Slice 2    | done                       |
+| 8   | Public thread visibility & sharing          | Slice 3    | done                       |
+| 9   | Leaderboard: global & personal              | Slice 4    | built, awaiting live check |
 
 ## Foundation
 
@@ -274,10 +274,16 @@ Two leaderboards from the same votes, one for everyone, one just for the signed-
 - **Design, per Feature 4's already-decided system:** each row's headline is the win-tally signature element — "Won 4 of 5" as the big Fraunces numeral in rust with the small proportional rust bar beside it (the sketch's bare `71%` stays overruled, as recorded under Feature 7). Beneath it, the quieter labeled mono numbers: avg tok/s, avg time-to-first-token. First place gets one subtle highlight and nobody else does. Model names resolve from the live catalog with the raw id as fallback, same as the thread page. `frontend-design` gets invoked at build time per CLAUDE.md.
 - **Verification:** typecheck/lint/format/build, then `curl` the page and check the server-rendered rows against a direct database query computing the same numbers by hand — the counts must match exactly. Browser pass covers the toggle and signed-out Personal state.
 
+**Built (2026-08-11), per the plan above.** `app/leaderboard/leaderboard-data.ts` holds the aggregation: one `computeRows(clerkId | null)` used for both boards — global passes `null`, personal filters turns to the signed-in user's own threads — so the two scopes can't drift apart. It runs two queries in parallel: voted turns with their messages and vote (votes are the scarce data, so this stays small), plus a `groupBy` on `Message` for the metric averages over every `SUCCESS` answer. Tallies are folded from the voted turns in TS (wins = turns this model's message won, total = voted turns it took part in — the same definition the thread badges use). Sort is wins desc, then win rate, then model id for stability. Unlike the sidebar's thread list, a database failure here deliberately throws rather than returning `[]` — an empty board would falsely read as "no votes yet", so it lands on the app's plain error boundary instead.
+
+`components/leaderboard/leaderboard-tabs.tsx` is the one client component: it owns the Global/Personal toggle (`aria-pressed`, real state — the old dead buttons and every placeholder row are gone), and renders each row as the Feature 4 signature element — "Won 2 of 3" as the big Fraunces numeral in rust with a proportional rust bar beside it, the quieter mono averages underneath, rank number and initial avatar on the left. First place alone gets a subtle `bg-primary/5` highlight. Three honest empty states: no votes at all, personal-with-no-votes, and signed-out personal (a sign-in prompt, since a personal board can't exist without an account). A metric that was never measured simply doesn't render — no dash, no zero.
+
+Verified: `tsc --noEmit`, `eslint .`, `prettier --check .`, `next build` all clean. The real check that matters — the server-rendered page was cross-checked against an independent hand-written SQL aggregation over the same database, and every number matched exactly: six models, `2 of 3` / `2 of 4` / `2 of 7` / `2 of 8` / `0 of 1` / `0 of 1` in that order, with the same average time-to-first-token per row (1902ms, 51250ms, 4457ms, 2989ms, 2900ms, 4114ms). Still open: the browser pass for the toggle and the signed-out personal state.
+
 - [x] Decide the approach
-- [ ] Build it: the aggregation function (global + personal scopes)
-- [ ] Build it: the real leaderboard page — tally rows, working toggle, empty states
-- [ ] Verify: checks, server-rendered numbers cross-checked against the database, browser pass
+- [x] Build it: the aggregation function (global + personal scopes)
+- [x] Build it: the real leaderboard page — tally rows, working toggle, empty states
+- [x] Verify: checks + server-rendered numbers cross-checked against an independent SQL query (exact match) — browser pass for the toggle still open
 
 ## Not doing right now
 
