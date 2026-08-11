@@ -128,10 +128,16 @@ export function LeaderboardTabs({
       </div>
 
       {scope === "global" ? (
-        <Board
-          rows={global}
-          emptyText="No votes yet. Pick some winners in the arena."
-        />
+        <div className="flex flex-col gap-3">
+          <p className="text-sm text-muted-foreground">
+            Every vote cast in the arena, by everyone. While you&apos;re the
+            only one voting, this matches your personal board.
+          </p>
+          <Board
+            rows={global}
+            emptyText="No votes yet. Pick some winners in the arena."
+          />
+        </div>
       ) : personal === null ? (
         <div className="flex flex-col items-start gap-3">
           <p className="text-sm text-muted-foreground">
@@ -147,10 +153,15 @@ export function LeaderboardTabs({
           </SignInButton>
         </div>
       ) : (
-        <Board
-          rows={personal}
-          emptyText="You haven't voted yet. Pick some winners in the arena."
-        />
+        <div className="flex flex-col gap-3">
+          <p className="text-sm text-muted-foreground">
+            Only the votes you&apos;ve cast yourself.
+          </p>
+          <Board
+            rows={personal}
+            emptyText="You haven't voted yet. Pick some winners in the arena."
+          />
+        </div>
       )}
     </div>
   );
