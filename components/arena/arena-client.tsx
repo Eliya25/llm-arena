@@ -201,11 +201,20 @@ export function ArenaClient({
   // is exactly what navigating away already does, so an abandoned turn saves
   // honestly either way instead of landing as a misleading "stopped" row.
   // Patches from those streams no-op once their turn is gone from state.
+  //
+  // Their controllers are dropped from the map, though — stopStreamingLanes()
+  // aborts everything it can still see, so the first prompt of the new chat
+  // would otherwise reach back and kill the abandoned conversation's lanes,
+  // persisting them as FAILED: answers recorded as never arriving when they
+  // were streaming fine. Dropping them only stops this arena from managing
+  // those streams; each one keeps its own controller, so its stall watchdog
+  // still fires and a genuine failure is still recorded as one.
   useEffect(() => {
     if (initialThreadId !== null) return;
     const ref = resetRef;
     ref.current = () => {
       sessionRef.current += 1;
+      controllersRef.current.clear();
       setTurns([]);
       setThreadId(null);
       setPrompt("");
