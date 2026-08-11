@@ -2,6 +2,7 @@ import { NextRequest } from "next/server";
 import { auth } from "@clerk/nextjs/server";
 import { aj } from "@/lib/arcjet";
 import { env } from "@/lib/env";
+import { getFreeModelCatalog } from "@/lib/openrouter";
 import { getPostHogClient } from "@/lib/posthog-server";
 
 const MAX_MESSAGES = 40;
@@ -165,6 +166,18 @@ export async function POST(request: NextRequest) {
     return Response.json(
       { error: "Your request couldn't be processed. Please try again." },
       { status: 403 },
+    );
+  }
+
+  // The browser's picker only offers free-tier models, but that's not a
+  // guarantee — a hand-crafted request could name any model and spend real
+  // money on the app's OpenRouter key. Only models in the server's own
+  // free-tier catalog go upstream; if the catalog can't be fetched, this
+  // deliberately fails closed rather than forwarding unverified ids.
+  const catalog = await getFreeModelCatalog();
+  if (!catalog.some((entry) => entry.id === model)) {
+    return badRequest(
+      "That model isn't available here. Pick one from the model list.",
     );
   }
 
