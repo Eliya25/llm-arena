@@ -28,7 +28,7 @@ There are rough hand-drawn sketches for the arena screen, the leaderboard, and t
 | 8   | Public thread visibility & sharing          | Slice 3    | done                       |
 | 9   | Leaderboard: global & personal              | Slice 4    | built, awaiting live check |
 | 10  | Abuse protection after public sharing       | Slice 3    | done                       |
-| 11  | Starting a new chat                         | Slice 2    | built, awaiting live check |
+| 11  | Starting a new chat                         | Slice 2    | done                       |
 
 ## Foundation
 
@@ -265,7 +265,7 @@ Rather than gamble on client-router behavior that can't be verified from a termi
 
 As shipped: a `Plus` icon inside a small translucent chip rather than the proposed `SquarePen`, a `⌘K` hint badge on the right at `md` and up, and the label hidden below `md` so the sidebar collapses to icons on narrow screens on its own (`w-16 md:w-64`) in addition to the manual collapse toggle. Nav rows and this button share one `SIDEBAR_ROW` constant for their geometry, per the no-copy-paste rule, so their icons line up on a single grid; collapsed, the label goes `sr-only` and `title` supplies the tooltip. A broader visual pass landed alongside this (grid texture behind the main area, an "A" wordmark chip, a rust active-indicator bar on nav rows) — Feature 4's palette and rules are unchanged, so it's a refinement within the existing system rather than a new direction.
 
-**Known gap, not shipped working: the `⌘K` badge is decorative.** There is no keyboard handler bound to it anywhere in the app — the only `metaKey` reference in the codebase is the modified-click guard on this very link. The badge currently advertises a shortcut that does nothing, which is the kind of promise the error-handling rule elsewhere in this project would not tolerate. Either wire it up or drop the badge; it should not stay as-is.
+**Resolved: the `⌘K` badge is gone.** It shipped briefly as decoration — a badge advertising a shortcut with no keyboard handler behind it anywhere in the app. Given the choice between wiring it and dropping it, the user chose to drop it, so the button is now just the icon and its label. Removing it also took the `justify-between` layout and the grouping wrapper span with it, since both only existed to hold the badge apart from the label.
 
 Verified: `tsc --noEmit`, `eslint .`, `prettier --check .`, `next build` all clean. Against the running dev server, the button server-renders on all four shell pages — `/arena`, `/leaderboard`, `/models`, and a signed-out public thread — as a real `<a href="/arena">` with the rust outline classes and an `aria-hidden` icon beside a visible text label. DOM order confirms it sits above the nav (New chat → Leaderboard → Your threads).
 
@@ -275,9 +275,8 @@ Verified: `tsc --noEmit`, `eslint .`, `prettier --check .`, `next build` all cle
 - [x] Build it: `new-chat-context.tsx`, provider in `AppShell`, reset registered by the fresh-arena `ArenaClient`
 - [x] Build it: the sidebar action, shared `SIDEBAR_ROW` geometry, collapsed state
 - [x] Verify: checks clean, renders on every shell page in the right position
-- [ ] Live check: send a prompt, press New chat, confirm the turns clear and the URL returns to `/arena`
-- [ ] Live check: press New chat from a thread page and from the collapsed sidebar
-- [ ] Decide the `⌘K` badge: wire the shortcut, or remove the badge — it currently does nothing
+- [x] Live check passed (2026-08-12): the user ran the app and confirmed New chat works — turns clear, the URL returns to `/arena`, and the two review fixes above hold in the browser
+- [x] Dropped the `⌘K` badge rather than wiring it, so nothing in the UI advertises a shortcut that doesn't exist
 
 ## Slice 3: Public visibility & sharing
 
