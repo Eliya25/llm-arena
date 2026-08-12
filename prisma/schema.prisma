@@ -27,6 +27,11 @@ model Turn {
   id        String    @id @default(cuid())
   threadId  String
   prompt    String
+  // A client-generated id for this turn, sent with both createTurn and the
+  // streaming request. It lets /api/chat find the message row to write once a
+  // stream ends, without waiting for createTurn first — the write stays
+  // parallel to the streams. Nullable: turns created before this existed.
+  clientKey String?   @unique
   createdAt DateTime  @default(now())
   messages  Message[]
   thread    Thread    @relation(fields: [threadId], references: [id])

@@ -4,16 +4,29 @@ import { aj } from "@/lib/arcjet";
 import { env } from "@/lib/env";
 import { getFreeModelCatalog } from "@/lib/openrouter";
 import { getPostHogClient } from "@/lib/posthog-server";
+import { prisma } from "@/lib/prisma";
 
 const MAX_MESSAGES = 40;
 const MAX_CONTENT_LENGTH = 32_000;
+// createTurn runs alongside this request rather than before it, so on a first
+// send the row can still be a moment away. The stream itself takes far longer
+// than this, so these retries effectively never all get used.
+const ROW_LOOKUP_ATTEMPTS = 6;
+const ROW_LOOKUP_DELAY_MS = 400;
 
 type ChatMessage = {
   role: "user" | "assistant";
   content: string;
 };
 
-type ChatRequestBody = {
+// Which message row this stream belongs to. `messageId` is used for a retry or
+// a restored turn, where the client already knows the row; `clientKey` is the
+// first-send case, where createTurn is still in flight. Both are only ever
+// used to *locate* a row the caller already owns — the content written into it
+// comes from the model's stream, never from the browser.
+type AnswerTarget = { messageId?: string; clientKey?: string };
+
+type ChatRequestBody = AnswerTarget & {
   model?: string;
   messages?: ChatMessage[];
 };
@@ -33,15 +46,63 @@ function isValidMessage(value: unknown): value is ChatMessage {
   );
 }
 
-// Reads a copy of the upstream SSE stream and reports the call itself to
-// PostHog's LLM analytics ($ai_generation) with measured tokens and latency —
-// separate from the funnel events, per docs/scope.md Feature 6.
-async function captureGeneration(
+const sleep = (ms: number) =>
+  new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+// Locates the caller's own message row for this stream. Scoped through the
+// relation chain to the Clerk user every time, so neither identifier can reach
+// a row belonging to somebody else. Retries only matter on a first send, where
+// createTurn is deliberately still running in parallel.
+async function findAnswerRow(
+  target: AnswerTarget,
+  model: string,
+  clerkId: string,
+): Promise<string | null> {
+  const where = target.messageId
+    ? {
+        id: target.messageId,
+        model,
+        turn: { thread: { user: { clerkId } } },
+      }
+    : {
+        model,
+        turn: { clientKey: target.clientKey, thread: { user: { clerkId } } },
+      };
+
+  for (let attempt = 0; attempt < ROW_LOOKUP_ATTEMPTS; attempt += 1) {
+    const message = await prisma.message.findFirst({
+      where,
+      select: { id: true },
+    });
+    if (message) return message.id;
+    await sleep(ROW_LOOKUP_DELAY_MS);
+  }
+  return null;
+}
+
+// Reads a copy of the upstream SSE stream — the only place in the app that
+// actually sees what the model said — and does two things with it: writes the
+// answer and its measured metrics to the database, and reports the call to
+// PostHog's LLM analytics ($ai_generation).
+//
+// This runs off a tee() branch rather than a transform in the client's path,
+// so it keeps reading even if the browser disconnects: closing the tab
+// mid-answer still saves the answer instead of stranding a PENDING row.
+async function recordAnswer(
   branch: ReadableStream<Uint8Array>,
-  details: { model: string; distinctId: string; startedAt: number },
+  details: {
+    model: string;
+    distinctId: string;
+    startedAt: number;
+    target: AnswerTarget;
+  },
 ) {
   let inputTokens: number | undefined;
   let outputTokens: number | undefined;
+  let firstTokenAt: number | undefined;
+  let endedAt: number | undefined;
+  let content = "";
+  let streamComplete = false;
 
   try {
     const reader = branch.getReader();
@@ -61,8 +122,14 @@ async function captureGeneration(
         if (payload === "" || payload === "[DONE]") continue;
         try {
           const chunk = JSON.parse(payload) as {
+            choices?: { delta?: { content?: string } }[];
             usage?: { prompt_tokens?: number; completion_tokens?: number };
           };
+          const delta = chunk.choices?.[0]?.delta?.content;
+          if (typeof delta === "string" && delta.length > 0) {
+            if (firstTokenAt === undefined) firstTokenAt = performance.now();
+            content += delta;
+          }
           if (typeof chunk.usage?.prompt_tokens === "number") {
             inputTokens = chunk.usage.prompt_tokens;
           }
@@ -74,8 +141,54 @@ async function captureGeneration(
         }
       }
     }
+    endedAt = performance.now();
+    streamComplete = true;
   } catch (cause) {
-    console.error("LLM analytics stream read failed", cause);
+    console.error("Answer stream read failed", cause);
+  }
+
+  // An incomplete stream stays PENDING — "this answer didn't finish" is the
+  // honest record, and writing SUCCESS on a truncated read would not be.
+  if (streamComplete) {
+    try {
+      const messageId = await findAnswerRow(
+        details.target,
+        details.model,
+        details.distinctId,
+      );
+      if (messageId) {
+        const tokensPerSecond =
+          outputTokens !== undefined &&
+          firstTokenAt !== undefined &&
+          endedAt !== undefined &&
+          endedAt > firstTokenAt
+            ? outputTokens / ((endedAt - firstTokenAt) / 1000)
+            : null;
+
+        await prisma.message.update({
+          where: { id: messageId },
+          data: {
+            content,
+            status: "SUCCESS",
+            // Measured here rather than in the browser, so the number is the
+            // model's own latency and not the visitor's connection.
+            timeToFirstTokenMs:
+              firstTokenAt !== undefined
+                ? Math.round(firstTokenAt - details.startedAt)
+                : null,
+            tokensPerSecond,
+            totalTokens: outputTokens ?? null,
+          },
+        });
+      } else {
+        console.error("No message row for finished answer", {
+          model: details.model,
+          target: details.target,
+        });
+      }
+    } catch (cause) {
+      console.error("Persisting answer failed", cause);
+    }
   }
 
   const posthog = getPostHogClient();
@@ -96,13 +209,37 @@ async function captureGeneration(
   await posthog.flush();
 }
 
+// The model never answered, so the row says so — written here because the
+// route is the only side that knows the upstream call failed.
+async function markAnswerFailed(
+  target: AnswerTarget,
+  model: string,
+  clerkId: string,
+) {
+  try {
+    const messageId = await findAnswerRow(target, model, clerkId);
+    if (!messageId) return;
+    await prisma.message.update({
+      where: { id: messageId },
+      data: { status: "FAILED" },
+    });
+  } catch (cause) {
+    console.error("Marking answer failed did not persist", cause);
+  }
+}
+
 // One request here = one model's own independent stream. The client opens
 // one of these per selected model so a slow or failing model never blocks
 // the others (docs/scope.md Feature 1).
 export async function POST(request: NextRequest) {
-  const { model, messages } = (await request.json()) as ChatRequestBody;
+  const { model, messages, messageId, clientKey } =
+    (await request.json()) as ChatRequestBody;
 
   if (!model) return badRequest("model is required");
+  if (typeof messageId !== "string" && typeof clientKey !== "string") {
+    return badRequest("This answer couldn't be started. Please try again.");
+  }
+  const target: AnswerTarget = { messageId, clientKey };
   if (
     !Array.isArray(messages) ||
     messages.length === 0 ||
@@ -250,6 +387,9 @@ export async function POST(request: NextRequest) {
       await posthog.flush();
     }
 
+    // The browser can no longer write this outcome, so the route records it.
+    await markAnswerFailed(target, model, distinctId);
+
     return Response.json(
       { error: "The model didn't respond. Please try again." },
       { status: 502 },
@@ -269,9 +409,10 @@ export async function POST(request: NextRequest) {
     await posthog.flush();
   }
 
-  // One copy streams to the browser, the other feeds LLM analytics.
-  const [clientBranch, analyticsBranch] = upstream.body.tee();
-  void captureGeneration(analyticsBranch, { model, distinctId, startedAt });
+  // One copy streams to the browser, the other is the app's own record of what
+  // the model actually said — it writes the answer and feeds LLM analytics.
+  const [clientBranch, recordBranch] = upstream.body.tee();
+  void recordAnswer(recordBranch, { model, distinctId, startedAt, target });
 
   return new Response(clientBranch, {
     headers: {

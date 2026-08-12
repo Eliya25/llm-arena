@@ -9,9 +9,7 @@ import { cn } from "@/lib/utils";
 import type { CatalogModel } from "@/lib/openrouter";
 import {
   castVote,
-  completeMessage,
   createTurn,
-  failMessage,
   type CreateTurnResult,
 } from "@/app/arena/actions";
 import { useNewChat } from "@/components/app-shell/new-chat-context";
@@ -50,6 +48,11 @@ type TurnView = {
 };
 
 type ChatMessage = { role: "user" | "assistant"; content: string };
+
+// How a stream tells the route which message row it is filling in: the row id
+// when it's already known (retry, restored turn), otherwise the turn's
+// client-generated key, since on a first send createTurn is still in flight.
+type AnswerTarget = { messageId?: string; clientKey?: string };
 
 // One persisted turn, as the thread page hands it over after a reload.
 export type InitialTurn = {
@@ -92,6 +95,10 @@ const MAX_HISTORY_MESSAGES = 40;
 // Rough characters-per-token for the live streaming readout only — the final
 // numbers always come from OpenRouter's real usage block.
 const CHARS_PER_TOKEN = 4;
+// A vote lands against rows the route writes when each stream ends, so a click
+// the instant the last lane finishes can arrive first. These cover that gap.
+const VOTE_RETRIES = 4;
+const VOTE_RETRY_MS = 400;
 
 // Metrics tick live while a lane streams — approximations carry a "~" so an
 // estimate never poses as a measurement; once the stream ends only the exact
@@ -178,13 +185,6 @@ export function ArenaClient({
   );
   // Live stream controllers, so a new message can stop lanes still running.
   const controllersRef = useRef(new Map<string, AbortController>());
-  // Completion/failure writes per turn and model — a lane can show "done" on
-  // screen before its SUCCESS row lands, and a vote cast in that gap would be
-  // rejected by the server. Each write resolves to whether it actually
-  // persisted, so voting can tell "still saving" from "failed to save".
-  const outcomeWritesRef = useRef(
-    new Map<number, Map<string, Promise<boolean>>>(),
-  );
 
   // Bumped every time "New chat" clears the arena. A createTurn still in
   // flight when that happens belongs to the conversation the user just walked
@@ -223,18 +223,6 @@ export function ArenaClient({
       ref.current = null;
     };
   }, [initialThreadId, resetRef]);
-
-  function trackOutcome(
-    turnKey: number,
-    modelId: string,
-    write: Promise<boolean>,
-  ) {
-    const writes =
-      outcomeWritesRef.current.get(turnKey) ??
-      new Map<string, Promise<boolean>>();
-    writes.set(modelId, write);
-    outcomeWritesRef.current.set(turnKey, writes);
-  }
 
   function patchTurn(turnKey: number, patch: Partial<TurnView>) {
     setTurns((current) =>
@@ -295,42 +283,14 @@ export function ArenaClient({
     );
   }
 
-  // Resolves to whether the outcome actually reached the database — a handled
-  // { error } from the server action is a failed write, not a persisted one.
-  // Never rejects, so callers can await it without a catch.
-  async function persistOutcome(
-    turnKey: number,
-    modelId: string,
-    outcome: { kind: "done"; lane: Lane } | { kind: "failed" },
-  ): Promise<boolean> {
-    try {
-      const pending = persistenceRef.current.get(turnKey);
-      if (!pending) return false;
-      const result = await pending;
-      if ("error" in result) return false;
-      const messageId = result.messageIds[modelId];
-      if (!messageId) return false;
-
-      const written =
-        outcome.kind === "done"
-          ? await completeMessage({
-              messageId,
-              content: outcome.lane.text,
-              ttftMs: outcome.lane.ttftMs,
-              tokensPerSecond: outcome.lane.tokensPerSecond,
-              totalTokens: outcome.lane.totalTokens,
-            })
-          : await failMessage({ messageId });
-      return !("error" in written);
-    } catch {
-      return false;
-    }
-  }
-
   async function streamModel(
     turnKey: number,
     modelId: string,
     messages: ChatMessage[],
+    // Tells the route which row this answer belongs to. Nothing about the
+    // answer itself travels from here — the route writes what the model said
+    // from its own copy of the stream (docs/scope.md Feature 12).
+    target: AnswerTarget,
   ) {
     const startedAt = performance.now();
     let firstTokenAt: number | undefined;
@@ -353,7 +313,7 @@ export function ArenaClient({
       const response = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ model: modelId, messages }),
+        body: JSON.stringify({ model: modelId, messages, ...target }),
         signal: controller.signal,
       });
 
@@ -366,11 +326,6 @@ export function ArenaClient({
           // Non-JSON error body — keep the plain default message.
         }
         patchLane(turnKey, modelId, { status: "error", errorMessage: message });
-        trackOutcome(
-          turnKey,
-          modelId,
-          persistOutcome(turnKey, modelId, { kind: "failed" }),
-        );
         return;
       }
 
@@ -437,19 +392,8 @@ export function ArenaClient({
           ? Math.round(completionTokens / ((endedAt - firstTokenAt) / 1000))
           : undefined;
 
-      const finishedLane: Lane = {
-        modelId,
-        modelName: "",
-        text: finalText,
-        status: "done",
-        ttftMs:
-          firstTokenAt !== undefined
-            ? Math.round(firstTokenAt - startedAt)
-            : undefined,
-        tokensPerSecond,
-        totalTokens: completionTokens,
-      };
-
+      // Shown, not stored. The route writes its own measurement of the same
+      // stream, so what lands in the database never passes through here.
       patchLane(turnKey, modelId, {
         status: "done",
         totalTokens: completionTokens,
@@ -457,11 +401,6 @@ export function ArenaClient({
         liveTokens: undefined,
         liveTokensPerSecond: undefined,
       });
-      trackOutcome(
-        turnKey,
-        modelId,
-        persistOutcome(turnKey, modelId, { kind: "done", lane: finishedLane }),
-      );
 
       posthog.capture("arena_answer_finished", {
         model: modelId,
@@ -476,12 +415,11 @@ export function ArenaClient({
           : controller.signal.reason === SUPERSEDED_REASON
             ? "Stopped so your next message could go out."
             : "The connection dropped. Please try again.";
+      // Nothing is written from here. A stream that never finished leaves its
+      // row PENDING, which renders as "this answer didn't finish" — the honest
+      // record, since the app genuinely doesn't know what the model would have
+      // said. Only the route, which saw the upstream call fail, writes FAILED.
       patchLane(turnKey, modelId, { status: "error", errorMessage: message });
-      trackOutcome(
-        turnKey,
-        modelId,
-        persistOutcome(turnKey, modelId, { kind: "failed" }),
-      );
     } finally {
       clearTimeout(stallTimer);
       controllersRef.current.delete(`${turnKey}:${modelId}`);
@@ -537,10 +475,15 @@ export function ArenaClient({
     // a slow write must not delay the first token.
     const isNewThread = threadId === null;
     const session = sessionRef.current;
+    // Shared by this write and the streams it runs alongside, so the route can
+    // find each message row the moment its stream ends without this write
+    // having to come first.
+    const clientKey = crypto.randomUUID();
     const persistence = createTurn({
       threadId,
       prompt: promptText,
       modelIds: models.map((model) => model.id),
+      clientKey,
     });
     persistenceRef.current.set(turnKey, persistence);
     void persistence.then((result) => {
@@ -587,14 +530,28 @@ export function ArenaClient({
         turnKey,
         model.id,
         buildHistory(model.id, priorTurns, promptText),
+        { clientKey },
       );
     }
   }
 
-  function handleRetry(turnKey: number, modelId: string) {
+  async function handleRetry(turnKey: number, modelId: string) {
     const turnIndex = turns.findIndex((turn) => turn.key === turnKey);
     const turn = turns[turnIndex];
     if (!turn || turn.winnerModelId !== null) return;
+
+    // The turn already exists by now — live or restored — so the row id is the
+    // target here, rather than the turn key a first send uses.
+    const pending = persistenceRef.current.get(turnKey);
+    const result = pending ? await pending : undefined;
+    const messageId =
+      result && !("error" in result) ? result.messageIds[modelId] : undefined;
+    if (!messageId) {
+      patchTurn(turnKey, {
+        voteError: "This turn couldn't be saved, so it can't be retried.",
+      });
+      return;
+    }
 
     patchLane(turnKey, modelId, {
       status: "streaming",
@@ -610,6 +567,7 @@ export function ArenaClient({
       turnKey,
       modelId,
       buildHistory(modelId, turns.slice(0, turnIndex), turn.prompt),
+      { messageId },
     );
   }
 
@@ -628,37 +586,26 @@ export function ArenaClient({
     const messageId = result.messageIds[modelId];
     if (!messageId) return;
 
-    // A lane can read "done" on screen before its SUCCESS row is written —
-    // wait for the turn's writes so the server sees the same finished answers
-    // the user just did. A write that failed (handled { error }, not just
-    // in-flight) gets one fresh attempt here, since the earlier failure may
-    // have been transient; a lane with no tracked write was restored from the
-    // database and is already persisted.
-    const writes = outcomeWritesRef.current.get(turnKey);
-    const doneLanes = turn.lanes.filter((lane) => lane.status === "done");
-    const persisted = await Promise.all(
-      doneLanes.map(async (lane) => {
-        const tracked = writes?.get(lane.modelId);
-        if (!tracked || (await tracked)) return true;
-        const retry = persistOutcome(turnKey, lane.modelId, {
-          kind: "done",
-          lane,
+    // A lane can read "done" on screen a moment before the route has finished
+    // writing its row, and the vote rules are enforced against those rows. The
+    // client can't watch that write any more — it happens server-side now — so
+    // instead of guessing, it asks and gives a straggling write a moment to
+    // land. Only the "not finished yet" answer is worth retrying; any other
+    // refusal is final and gets shown as-is.
+    const outcome = await (async () => {
+      for (let attempt = 0; ; attempt += 1) {
+        const attempted = await castVote({
+          turnId: result.turnId,
+          messageId,
         });
-        trackOutcome(turnKey, lane.modelId, retry);
-        return retry;
-      }),
-    );
-    const pickedSaved =
-      persisted[doneLanes.findIndex((lane) => lane.modelId === modelId)];
-    if (!pickedSaved || persisted.filter(Boolean).length < 2) {
-      patchTurn(turnKey, {
-        voteError:
-          "The answers didn't finish saving, so this vote can't be recorded. Please try again.",
-      });
-      return;
-    }
+        const stillSaving =
+          "error" in attempted &&
+          attempted.error === "A vote needs at least two finished answers.";
+        if (!stillSaving || attempt >= VOTE_RETRIES) return attempted;
+        await new Promise((resolve) => setTimeout(resolve, VOTE_RETRY_MS));
+      }
+    })();
 
-    const outcome = await castVote({ turnId: result.turnId, messageId });
     if ("error" in outcome) {
       patchTurn(turnKey, { voteError: outcome.error });
       return;
