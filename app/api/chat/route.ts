@@ -390,6 +390,21 @@ export async function POST(request: NextRequest) {
     // The browser can no longer write this outcome, so the route records it.
     await markAnswerFailed(target, model, distinctId);
 
+    // A 429 from upstream isn't silence — the model answered, and the answer
+    // was "I'm full". Free-tier models share a provider pool, so this is the
+    // single most common way a lane fails here; saying "didn't respond" would
+    // send someone debugging their own prompt instead of just picking another
+    // model or waiting a moment.
+    if (upstream.status === 429) {
+      return Response.json(
+        {
+          error:
+            "This model is busy right now. Try again in a moment, or pick a different one.",
+        },
+        { status: 429 },
+      );
+    }
+
     return Response.json(
       { error: "The model didn't respond. Please try again." },
       { status: 502 },

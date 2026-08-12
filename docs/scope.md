@@ -391,6 +391,14 @@ Verified: `tsc --noEmit`, `eslint .`, `prettier --check .`, `next build` all cle
 - [ ] Live check: send a prompt, then confirm the stored row matches what the model actually said
 - [ ] Live check: vote immediately as the last lane finishes, and retry a failed lane
 
+**Follow-up (2026-08-12): making a slow free model read as slow, not broken.** Reported from real use — two lanes sat on "waiting for first token…" with no sign of life while a third said "The model didn't respond". The server log settled what was actually happening, and none of it was a defect in the code above: one request ran a full **72 seconds**, and the failing lane had come back from OpenRouter as a plain `429` — `inclusionai/ling-3.0-tiny:free is temporarily rate-limited upstream` from provider Novita's shared free pool. Slow starts are simply what this tier does; the stored measurements already contained first tokens at 43s and 51s. Three changes, all about telling the truth about that rather than changing it:
+
+- **A ticking wait.** A lane with no first token yet counts the seconds out loud ("waiting for first token… 23s"). Silence for a minute reads as a hang; a counter reads as a slow model. The count only appears after the first second, so a fast start doesn't flash `0s`, and it's cleared the moment the real time-to-first-token measurement replaces it.
+- **`429` gets its own sentence.** "This model is busy right now. Try again in a moment, or pick a different one." The old copy said the model didn't respond, but it did respond — it said it was full. The distinction matters because it tells someone to wait or switch models instead of doubting their prompt.
+- **The stall watchdog was one timer doing two jobs, and is now two.** A single 60-second budget covered both "hasn't started yet" and "stopped mid-answer", which meant the 43s and 51s answers already in the database were only ever ~10s from being cut off as failures. Waiting for the first token now gets 120s; a gap _after_ tokens have started keeps 60s, since by then silence really does mean the stream died. They also fail with different sentences — "never started answering" versus "stopped partway through" — because those are different problems for the reader.
+
+Verified: `tsc --noEmit`, `eslint .`, `prettier --check .`, `next build` all clean, and the routes still serve. The timing behaviour itself is client-side and needs the browser.
+
 ## Slice 4: Leaderboard
 
 ### 9. Leaderboard: global & personal

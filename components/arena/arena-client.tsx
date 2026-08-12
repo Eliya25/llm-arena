@@ -35,6 +35,9 @@ type Lane = {
   // and the exact usage-based numbers take over.
   liveTokensPerSecond?: number;
   liveTokens?: number;
+  // Whole seconds spent waiting for the first token, ticking while it's still
+  // outstanding. A slow model should look slow, not broken.
+  waitingSeconds?: number;
 };
 
 type TurnView = {
@@ -82,10 +85,18 @@ type StreamChunk = {
 
 type LanePatch = Partial<Lane> | ((lane: Lane) => Partial<Lane>);
 
-// How long a stream may go without any progress before it's cut off.
+// Two different kinds of waiting, so they get two different budgets. A free
+// model can genuinely take a long time to start — measured answers in this
+// database include first tokens at 43s and 51s — so cutting the wait at the
+// same 60s used for a mid-stream gap kills answers that were on their way.
+// Once tokens are flowing, though, a full minute of silence really is broken.
+const FIRST_TOKEN_MS = 120_000;
 const STALL_MS = 60_000;
+const FIRST_TOKEN_REASON = "no-first-token";
 const STALL_REASON = "stall";
 const SUPERSEDED_REASON = "superseded";
+// How often the "still waiting" readout ticks before the first token.
+const WAITING_TICK_MS = 1000;
 // Matches the server's per-message content cap, so a giant answer in the
 // history gets trimmed instead of failing the whole follow-up.
 const MAX_HISTORY_CONTENT = 32_000;
@@ -125,7 +136,12 @@ function laneMetrics(lane: Lane): string {
   ].filter((part): part is string => part !== null);
 
   if (parts.length === 0) {
-    return streaming ? "waiting for first token…" : "";
+    if (!streaming) return "";
+    // The count only appears once there's something worth reporting, so a
+    // normal fast start doesn't flash "0s" on its way past.
+    return lane.waitingSeconds !== undefined && lane.waitingSeconds > 0
+      ? `waiting for first token… ${lane.waitingSeconds}s`
+      : "waiting for first token…";
   }
   return parts.join(" · ");
 }
@@ -300,14 +316,28 @@ export function ArenaClient({
     const controller = new AbortController();
     controllersRef.current.set(`${turnKey}:${modelId}`, controller);
 
-    // A model that goes quiet — never a first token, or a stream that stops
-    // moving — ends with a plain timeout instead of hanging forever.
+    // A model that goes quiet ends with a plain timeout instead of hanging
+    // forever. Before the first token that budget is generous; after it, a
+    // gap this long means the stream really has died.
     let stallTimer: ReturnType<typeof setTimeout> | undefined;
     const resetStallTimer = () => {
       clearTimeout(stallTimer);
-      stallTimer = setTimeout(() => controller.abort(STALL_REASON), STALL_MS);
+      const started = firstTokenAt !== undefined;
+      stallTimer = setTimeout(
+        () => controller.abort(started ? STALL_REASON : FIRST_TOKEN_REASON),
+        started ? STALL_MS : FIRST_TOKEN_MS,
+      );
     };
     resetStallTimer();
+
+    // Counts the wait out loud so a slow model reads as slow rather than
+    // stuck. Stops the moment the first token lands.
+    const waitingTicker = setInterval(() => {
+      if (firstTokenAt !== undefined) return;
+      patchLane(turnKey, modelId, {
+        waitingSeconds: Math.round((performance.now() - startedAt) / 1000),
+      });
+    }, WAITING_TICK_MS);
 
     try {
       const response = await fetch("/api/chat", {
@@ -325,7 +355,11 @@ export function ArenaClient({
         } catch {
           // Non-JSON error body — keep the plain default message.
         }
-        patchLane(turnKey, modelId, { status: "error", errorMessage: message });
+        patchLane(turnKey, modelId, {
+          status: "error",
+          errorMessage: message,
+          waitingSeconds: undefined,
+        });
         return;
       }
 
@@ -360,6 +394,8 @@ export function ArenaClient({
               firstTokenAt = performance.now();
               patchLane(turnKey, modelId, {
                 ttftMs: Math.round(firstTokenAt - startedAt),
+                // The wait is over; the real measurement replaces the count.
+                waitingSeconds: undefined,
               });
             }
             finalText += delta;
@@ -400,6 +436,7 @@ export function ArenaClient({
         tokensPerSecond,
         liveTokens: undefined,
         liveTokensPerSecond: undefined,
+        waitingSeconds: undefined,
       });
 
       posthog.capture("arena_answer_finished", {
@@ -410,18 +447,25 @@ export function ArenaClient({
       });
     } catch {
       const message =
-        controller.signal.reason === STALL_REASON
-          ? "The model took too long to respond."
-          : controller.signal.reason === SUPERSEDED_REASON
-            ? "Stopped so your next message could go out."
-            : "The connection dropped. Please try again.";
+        controller.signal.reason === FIRST_TOKEN_REASON
+          ? "This model never started answering. Try again, or pick a different one."
+          : controller.signal.reason === STALL_REASON
+            ? "The model stopped partway through its answer."
+            : controller.signal.reason === SUPERSEDED_REASON
+              ? "Stopped so your next message could go out."
+              : "The connection dropped. Please try again.";
       // Nothing is written from here. A stream that never finished leaves its
       // row PENDING, which renders as "this answer didn't finish" — the honest
       // record, since the app genuinely doesn't know what the model would have
       // said. Only the route, which saw the upstream call fail, writes FAILED.
-      patchLane(turnKey, modelId, { status: "error", errorMessage: message });
+      patchLane(turnKey, modelId, {
+        status: "error",
+        errorMessage: message,
+        waitingSeconds: undefined,
+      });
     } finally {
       clearTimeout(stallTimer);
+      clearInterval(waitingTicker);
       controllersRef.current.delete(`${turnKey}:${modelId}`);
     }
   }
