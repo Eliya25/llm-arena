@@ -1,9 +1,10 @@
 import { prisma } from "@/lib/prisma";
 import { getPostHogClient } from "@/lib/posthog-server";
 
-// How often the accumulated answer is written down mid-stream. Time-based, not
-// per-token: a three-minute answer that dies at the 99% mark used to persist an
-// empty string, and one write per token would be absurd in the other direction.
+// How often the stream pauses to write down what has arrived and to confirm
+// this attempt still owns the row. Time-based, not per-token: a three-minute
+// answer that dies at the 99% mark used to persist an empty string, and one
+// write per token would be absurd in the other direction.
 const CHECKPOINT_MS = 2_000;
 
 // The authoritative outcome of one generation: exactly what was written to the
@@ -17,6 +18,20 @@ export type AnswerResult = {
   outputTokens: number | null;
 };
 
+// Which row this recorder owns, and how it reports back to the route.
+type Recording = {
+  messageId: string;
+  // The try this recorder owns. Every write it makes is conditioned on it, so
+  // once a retry has claimed the row this recorder writes nothing.
+  attempt: number;
+  model: string;
+  distinctId: string;
+  upstreamAt: number;
+  // Called on every chunk that arrives, so the route's stall watchdog can
+  // tell a slow model from a dead one.
+  onProgress: (hasFirstToken: boolean) => void;
+};
+
 type StreamChunk = {
   choices?: { delta?: { content?: string } }[];
   usage?: { prompt_tokens?: number; completion_tokens?: number };
@@ -28,8 +43,14 @@ type Reading = {
   outputTokens: number | null;
   firstTokenAt: number | null;
   lastTokenAt: number | null;
-  complete: boolean;
 };
+
+// How the read ended — returned, rather than tracked in a flag the rest of the
+// function reassigns. "complete" is a clean upstream finish, "interrupted" is
+// one that died mid-read, and "superseded" means a retry claimed the row while
+// this attempt was still streaming, so nothing measured here belongs to the
+// answer any more.
+type ReadOutcome = "complete" | "interrupted" | "superseded";
 
 // Only the metrics whose definitions are pinned in prisma/schema.prisma. A
 // value upstream never reported stays null — never estimated, never zeroed.
@@ -62,69 +83,75 @@ function parseChunk(payload: string): StreamChunk | null {
   }
 }
 
-// Reads the server's own copy of the upstream stream — the only place in the
-// app that actually sees what the model said — and writes it down as it goes.
+// Writes down what has arrived so far. Returns whether this attempt still owns
+// the row: the update names the attempt, so zero rows changed is the row
+// telling us a retry has taken over.
 //
-// This runs off a tee() branch rather than a transform in the browser's path,
-// and the route hands it to after(), so a closed tab does not end the read:
-// walking away from a live answer still saves the answer.
-export async function recordAnswer(
+// Any other failure is best-effort — a failed intermediate write must not
+// abandon a stream that is still arriving, since the final write may well
+// succeed.
+async function checkpoint(
+  reading: Reading,
+  details: Recording,
+): Promise<boolean> {
+  try {
+    const written = await prisma.message.updateMany({
+      where: { id: details.messageId, attempt: details.attempt },
+      data: { content: reading.content, status: "STREAMING" },
+    });
+    return written.count > 0;
+  } catch (cause) {
+    console.error("Checkpointing an answer failed", {
+      messageId: details.messageId,
+      attempt: details.attempt,
+      cause,
+    });
+    return true;
+  }
+}
+
+// The same ownership question, for a stream that has produced no visible text
+// yet — a model still working through reasoning tokens, or one sending nothing
+// but keep-alives. Asked as a read rather than a write, because there is
+// nothing to save and STREAMING should keep meaning "tokens have arrived".
+//
+// Without it, a superseded generation that had not yet said anything visible
+// went unnoticed until its upstream finished on its own, holding a model
+// connection open to produce an answer that was already being thrown away.
+async function stillOwned(details: Recording): Promise<boolean> {
+  try {
+    const owner = await prisma.message.findFirst({
+      where: { id: details.messageId, attempt: details.attempt },
+      select: { id: true },
+    });
+    return owner !== null;
+  } catch (cause) {
+    console.error("Checking answer ownership failed", {
+      messageId: details.messageId,
+      attempt: details.attempt,
+      cause,
+    });
+    return true;
+  }
+}
+
+// Drains the server's own copy of the upstream stream into `reading`, pausing
+// on the checkpoint interval to save progress and to confirm the row is still
+// this attempt's to write.
+async function readStream(
   branch: ReadableStream<Uint8Array>,
-  details: {
-    messageId: string;
-    // The try this recorder owns. Every write it makes is conditioned on it,
-    // so once a retry has claimed the row this recorder writes nothing.
-    attempt: number;
-    model: string;
-    distinctId: string;
-    upstreamAt: number;
-    // Called on every chunk that arrives, so the route's stall watchdog can
-    // tell a slow model from a dead one.
-    onProgress: (hasFirstToken: boolean) => void;
-  },
-): Promise<AnswerResult | null> {
-  const reading: Reading = {
-    content: "",
-    inputTokens: null,
-    outputTokens: null,
-    firstTokenAt: null,
-    lastTokenAt: null,
-    complete: false,
-  };
-
-  // Set once a write finds the row has moved on to a later attempt: a retry
-  // owns this answer now, and everything measured here belongs to a try the
-  // user already replaced. The honest thing is to stop, not to publish it.
-  let superseded = false;
-
-  // Checkpoints are best-effort: a failed intermediate write must not abandon
-  // a stream that is still arriving, since the final write may well succeed.
+  reading: Reading,
+  details: Recording,
+): Promise<ReadOutcome> {
+  const reader = branch.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
   let checkpointedAt = 0;
-  const checkpoint = async () => {
-    checkpointedAt = performance.now();
-    try {
-      const written = await prisma.message.updateMany({
-        where: { id: details.messageId, attempt: details.attempt },
-        data: { content: reading.content, status: "STREAMING" },
-      });
-      if (written.count === 0) superseded = true;
-    } catch (cause) {
-      console.error("Checkpointing an answer failed", {
-        messageId: details.messageId,
-        attempt: details.attempt,
-        cause,
-      });
-    }
-  };
 
   try {
-    const reader = branch.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
-
     for (;;) {
       const { done, value } = await reader.read();
-      if (done) break;
+      if (done) return "complete";
       buffer += decoder.decode(value, { stream: true });
       const lines = buffer.split("\n");
       buffer = lines.pop() ?? "";
@@ -157,25 +184,52 @@ export async function recordAnswer(
       // already have switched to the shorter between-token one.
       details.onProgress(reading.firstTokenAt !== null);
 
-      if (
-        reading.content.length > 0 &&
-        performance.now() - checkpointedAt > CHECKPOINT_MS
-      ) {
-        await checkpoint();
-        // A retry took the row while this was streaming. Reading on would only
-        // burn an upstream connection to write an answer nobody is waiting for.
-        if (superseded) break;
+      if (performance.now() - checkpointedAt > CHECKPOINT_MS) {
+        checkpointedAt = performance.now();
+        // Asked on every interval, with or without text to save, so a stream
+        // that has yet to produce anything visible still finds out it has been
+        // replaced instead of running on unwatched to the end.
+        const ours =
+          reading.content.length > 0
+            ? await checkpoint(reading, details)
+            : await stillOwned(details);
+        if (!ours) {
+          // Let go of the upstream rather than reading to the end of an answer
+          // nobody is waiting for.
+          await reader.cancel().catch(() => {});
+          return "superseded";
+        }
       }
     }
-    reading.complete = true;
   } catch (cause) {
     console.error("Answer stream read failed", {
       messageId: details.messageId,
       cause,
     });
+    return "interrupted";
   }
+}
 
-  const metrics = measure(reading, details.upstreamAt);
+// Reads the server's own copy of the upstream stream — the only place in the
+// app that actually sees what the model said — and writes it down as it goes.
+//
+// This runs off a tee() branch rather than a transform in the browser's path,
+// and the route hands it to after(), so a closed tab does not end the read:
+// walking away from a live answer still saves the answer.
+export async function recordAnswer(
+  branch: ReadableStream<Uint8Array>,
+  details: Recording,
+): Promise<AnswerResult | null> {
+  const reading: Reading = {
+    content: "",
+    inputTokens: null,
+    outputTokens: null,
+    firstTokenAt: null,
+    lastTokenAt: null,
+  };
+
+  const outcome = await readStream(branch, reading, details);
+
   // A stream that died partway is FAILED, not SUCCESS — but the text it did
   // produce is kept, because that text is genuinely what the model said. Only
   // a clean upstream finish is allowed to claim success.
@@ -186,37 +240,47 @@ export async function recordAnswer(
   // that a success would put an empty card in the arena that can be voted for
   // and would feed the leaderboard a win nobody could read.
   const status =
-    reading.complete && reading.content.length > 0 ? "SUCCESS" : "FAILED";
+    outcome === "complete" && reading.content.length > 0 ? "SUCCESS" : "FAILED";
+  const metrics = measure(reading, details.upstreamAt);
 
-  try {
-    // Conditioned on the attempt, so this is a no-op once a retry has claimed
-    // the row — the write that would otherwise land here is precisely the one
-    // that used to overwrite a newer answer with an older one.
-    const written = await prisma.message.updateMany({
-      where: { id: details.messageId, attempt: details.attempt },
-      data: {
-        content: reading.content,
-        status,
-        ...metrics,
-        inputTokens: reading.inputTokens,
-        outputTokens: reading.outputTokens,
-      },
-    });
-    if (written.count === 0) {
-      superseded = true;
-      console.warn("Discarded a superseded answer", {
-        messageId: details.messageId,
-        attempt: details.attempt,
-      });
-    }
-  } catch (cause) {
-    console.error("Persisting an answer failed", {
+  // Conditioned on the attempt like every other write here, so this is a no-op
+  // once a retry has claimed the row — the write that would otherwise land
+  // here is precisely the one that used to overwrite a newer answer with an
+  // older one. A read already known to be superseded skips it entirely.
+  const stored =
+    outcome === "superseded"
+      ? false
+      : await prisma.message
+          .updateMany({
+            where: { id: details.messageId, attempt: details.attempt },
+            data: {
+              content: reading.content,
+              status,
+              ...metrics,
+              inputTokens: reading.inputTokens,
+              outputTokens: reading.outputTokens,
+            },
+          })
+          .then((written) => written.count > 0)
+          .catch((cause: unknown) => {
+            console.error("Persisting an answer failed", {
+              messageId: details.messageId,
+              attempt: details.attempt,
+              cause,
+            });
+            return false;
+          });
+
+  if (!stored) {
+    console.warn("Discarded an answer this attempt no longer owns", {
       messageId: details.messageId,
       attempt: details.attempt,
-      cause,
+      outcome,
     });
   }
 
+  // Captured either way: the model call really happened and really cost
+  // latency, whether or not its answer was still wanted by the time it landed.
   const posthog = getPostHogClient();
   if (posthog) {
     posthog.capture({
@@ -237,13 +301,9 @@ export async function recordAnswer(
 
   // Null means nothing was stored, so there is nothing authoritative to tell
   // the browser — the route simply omits its closing frame.
-  return superseded
-    ? null
-    : {
-        status,
-        outputTokens: reading.outputTokens,
-        ...metrics,
-      };
+  return stored
+    ? { status, outputTokens: reading.outputTokens, ...metrics }
+    : null;
 }
 
 // The model never answered at all, so the row says so. Written here because
