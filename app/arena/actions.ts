@@ -3,40 +3,23 @@
 import { auth } from "@clerk/nextjs/server";
 import { request as arcjetRequest } from "@arcjet/next";
 import { ajActions } from "@/lib/arcjet";
-import { getFreeModelCatalog } from "@/lib/openrouter";
 import { prisma } from "@/lib/prisma";
 import { getPostHogClient } from "@/lib/posthog-server";
-
-const MAX_MODELS = 3;
-const THREAD_TITLE_LENGTH = 80;
-// Mirrors /api/chat's per-message cap — a turn that persistence accepts must
-// also be one streaming accepts, or the database fills with unrunnable turns.
-const MAX_PROMPT_LENGTH = 32_000;
 
 const SIGN_IN_ERROR = "Please sign in to do that.";
 const GENERIC_ERROR = "Something went wrong saving this. Please try again.";
 const RATE_LIMIT_ERROR =
   "You're doing that too quickly. Please wait a moment and try again.";
 
-// Weighted costs against the shared per-person bucket in lib/arcjet.ts:
-// creating a turn writes a thread, a turn, and a row per model, so it costs
-// more than the single-row updates that follow it.
-const COST_CREATE_TURN = 5;
+// One vote is one row, against the shared per-person bucket in lib/arcjet.ts.
+// The heavier weighting createTurn used to carry left with it — threads, turns,
+// and answer rows are now written by /api/chat, under that route's own limit.
 const COST_SINGLE_WRITE = 1;
 
 type ActionError = { error: string };
 // Explicit, not inferred: an inferred union puts an optional `error` key on the
 // success branch too, which stops `"error" in result` from narrowing.
 type Authorized = { user: { id: string; clerkId: string } };
-
-export type CreateTurnResult =
-  | {
-      threadId: string;
-      turnId: string;
-      // model id → message row id, so each lane knows which row to finish.
-      messageIds: Record<string, string>;
-    }
-  | ActionError;
 
 export type ThreadListItem = { id: string; title: string };
 
@@ -89,144 +72,21 @@ async function authorize(requested: number): Promise<Authorized | ActionError> {
   return { user };
 }
 
-export async function createTurn(input: {
-  threadId: string | null;
-  prompt: string;
-  modelIds: string[];
-}): Promise<CreateTurnResult> {
-  try {
-    const prompt = input.prompt.trim();
-    const modelIds = [...new Set(input.modelIds)];
-    if (
-      prompt.length === 0 ||
-      modelIds.length === 0 ||
-      modelIds.length > MAX_MODELS
-    ) {
-      return { error: GENERIC_ERROR };
-    }
-    if (prompt.length > MAX_PROMPT_LENGTH) {
-      return { error: "That prompt is too long. Please shorten it." };
-    }
-
-    // Same allowlist /api/chat enforces: only models from the server's own
-    // free-tier catalog. A failed catalog fetch fails closed, like the route.
-    const catalog = await getFreeModelCatalog();
-    if (!modelIds.every((id) => catalog.some((model) => model.id === id))) {
-      return {
-        error: "Those models aren't available here. Pick from the model list.",
-      };
-    }
-
-    const authorized = await authorize(COST_CREATE_TURN);
-    if ("error" in authorized) return authorized;
-    const { user } = authorized;
-
-    // A follow-up must land in a thread this user actually owns.
-    const thread = input.threadId
-      ? await prisma.thread.findFirst({
-          where: { id: input.threadId, userId: user.id },
-        })
-      : await prisma.thread.create({
-          data: {
-            userId: user.id,
-            title: prompt.slice(0, THREAD_TITLE_LENGTH),
-          },
-        });
-    if (!thread) return { error: GENERIC_ERROR };
-
-    const turn = await prisma.turn.create({
-      data: {
-        threadId: thread.id,
-        prompt,
-        messages: {
-          create: modelIds.map((model) => ({ model, content: "" })),
-        },
-      },
-      include: { messages: true },
-    });
-
-    return {
-      threadId: thread.id,
-      turnId: turn.id,
-      messageIds: Object.fromEntries(
-        turn.messages.map((message) => [message.model, message.id]),
-      ),
-    };
-  } catch (cause) {
-    console.error("createTurn failed", cause);
-    return { error: GENERIC_ERROR };
-  }
-}
-
-async function findOwnedMessage(
-  messageId: string,
-): Promise<{ messageId: string } | ActionError> {
-  const authorized = await authorize(COST_SINGLE_WRITE);
-  if ("error" in authorized) return authorized;
-
-  const message = await prisma.message.findFirst({
-    where: { id: messageId, turn: { thread: { userId: authorized.user.id } } },
-    select: { id: true },
-  });
-  if (!message) return { error: SIGN_IN_ERROR };
-  return { messageId: message.id };
-}
-
-export async function completeMessage(input: {
-  messageId: string;
-  content: string;
-  ttftMs?: number;
-  tokensPerSecond?: number;
-  totalTokens?: number;
-}): Promise<{ ok: true } | ActionError> {
-  try {
-    const found = await findOwnedMessage(input.messageId);
-    if ("error" in found) return found;
-
-    const asInt = (value: number | undefined) =>
-      value !== undefined && Number.isFinite(value) && value >= 0
-        ? Math.round(value)
-        : null;
-
-    await prisma.message.update({
-      where: { id: found.messageId },
-      data: {
-        content: input.content,
-        status: "SUCCESS",
-        timeToFirstTokenMs: asInt(input.ttftMs),
-        tokensPerSecond:
-          input.tokensPerSecond !== undefined &&
-          Number.isFinite(input.tokensPerSecond) &&
-          input.tokensPerSecond >= 0
-            ? input.tokensPerSecond
-            : null,
-        totalTokens: asInt(input.totalTokens),
-      },
-    });
-    return { ok: true };
-  } catch (cause) {
-    console.error("completeMessage failed", cause);
-    return { error: GENERIC_ERROR };
-  }
-}
-
-export async function failMessage(input: {
-  messageId: string;
-}): Promise<{ ok: true } | ActionError> {
-  try {
-    const found = await findOwnedMessage(input.messageId);
-    if ("error" in found) return found;
-
-    await prisma.message.update({
-      where: { id: found.messageId },
-      data: { status: "FAILED" },
-    });
-    return { ok: true };
-  } catch (cause) {
-    console.error("failMessage failed", cause);
-    return { error: GENERIC_ERROR };
-  }
-}
+// Three write actions used to live here and none of them do any more.
+//
+// completeMessage/failMessage took the answer text and the metrics straight
+// from the browser and only checked who owned the row, so a signed-in user
+// could publish arbitrary text at a public thread URL under a model's name and
+// feed invented speed numbers to the global leaderboard (removed in
+// docs/scope.md Feature 12).
+//
+// createTurn wrote the thread, the turn, and one row per model, running in
+// parallel with the streams — which meant /api/chat had to *find* the row it
+// wanted afterwards, by polling, and silently dropped a finished answer when
+// that write was slow. The route now creates what it needs before it calls the
+// model (docs/scope-v2.md Feature 1). Everything about an answer — which rows
+// exist, what they contain, what they measured — is written in one place, by
+// the only side that sees the model's output.
 
 export async function castVote(input: {
   turnId: string;

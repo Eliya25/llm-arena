@@ -18,6 +18,11 @@ model Thread {
   id        String   @id @default(cuid())
   userId    String
   title     String
+  // A client-generated id for the thread a first prompt is about to open. The
+  // three model lanes of that prompt all reach /api/chat at once and each one
+  // is willing to create the thread, so they converge here instead of racing
+  // into three threads. Nullable: threads created before this existed.
+  clientKey String?  @unique
   createdAt DateTime @default(now())
   user      User     @relation(fields: [userId], references: [id])
   turns     Turn[]
@@ -27,6 +32,9 @@ model Turn {
   id        String    @id @default(cuid())
   threadId  String
   prompt    String
+  // Same idea as Thread.clientKey, one level down: the lanes of one prompt
+  // converge on a single turn rather than creating one each.
+  clientKey String?   @unique
   createdAt DateTime  @default(now())
   messages  Message[]
   thread    Thread    @relation(fields: [threadId], references: [id])
@@ -34,17 +42,42 @@ model Turn {
 }
 
 model Message {
-  id                 String        @id @default(cuid())
-  turnId             String
-  model              String
-  content            String
-  status             MessageStatus @default(PENDING)
-  timeToFirstTokenMs Int?
-  tokensPerSecond    Float?
-  totalTokens        Int?
-  createdAt          DateTime      @default(now())
-  turn               Turn          @relation(fields: [turnId], references: [id])
-  votes              Vote[]
+  id     String @id @default(cuid())
+  turnId String
+  model  String
+  // Written only by app/api/chat, from the server's own copy of the upstream
+  // stream. Checkpointed while the answer streams, so a generation that dies
+  // partway still keeps what the model actually said.
+  content String
+  status  MessageStatus @default(PENDING)
+  // Definitions are pinned deliberately, because the leaderboard ranks models
+  // on them (docs/scope-v2.md Feature 1D):
+  //   timeToFirstTokenMs   upstream response headers -> first content delta.
+  //                        The model's own latency, not the network's.
+  //   generationDurationMs first content delta -> last content delta.
+  //   tokensPerSecond      outputTokens / (response headers -> last delta).
+  //                        The whole window on purpose, not generationDuration:
+  //                        tokens spent on reasoning are produced during the
+  //                        wait for the first visible token, and dividing by
+  //                        the streaming part alone stored 3152 tok/s for 49
+  //                        characters — a real row, on a number the
+  //                        leaderboard ranks models by.
+  //   inputTokens          prompt tokens, as OpenRouter reported them.
+  //   outputTokens         completion tokens, as OpenRouter reported them.
+  // Anything upstream never reported stays null. Never estimated, never zero.
+  timeToFirstTokenMs   Int?
+  generationDurationMs Int?
+  tokensPerSecond      Float?
+  inputTokens          Int?
+  outputTokens         Int?
+  createdAt            DateTime @default(now())
+  turn                 Turn     @relation(fields: [turnId], references: [id])
+  votes                Vote[]
+
+  // One model answers one turn once. A retry rewrites its row instead of
+  // adding a second answer, and it is what lets /api/chat find its own row
+  // without a lookup race.
+  @@unique([turnId, model])
 }
 
 model Vote {
@@ -57,7 +90,12 @@ model Vote {
 }
 
 enum MessageStatus {
+  // Row claimed, nothing streamed into it yet.
   PENDING
+  // The server has seen at least one token and is writing checkpoints.
+  STREAMING
+  // Upstream finished cleanly. The only status the leaderboard counts.
   SUCCESS
+  // Upstream never answered, or died partway. Partial content is kept.
   FAILED
 }

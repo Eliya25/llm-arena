@@ -8,7 +8,6 @@ import { SignInButton, UserButton, useUser } from "@clerk/nextjs";
 import {
   Boxes,
   CircleUserRound,
-  Command,
   Moon,
   Plus,
   Sun,
@@ -70,22 +69,14 @@ function NewChatButton({ collapsed }: { collapsed: boolean }) {
       className={cn(
         SIDEBAR_ROW,
         "soft-shadow mx-2 mb-4 border border-primary/70 bg-primary font-semibold text-primary-foreground hover:bg-primary/90",
-        !collapsed && "justify-between",
       )}
     >
-      <span className="flex min-w-0 items-center gap-3">
-        <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-primary-foreground/12">
-          <Plus className="h-3.5 w-3.5" strokeWidth={2.5} aria-hidden />
-        </span>
-        <span className={cn("truncate max-md:hidden", collapsed && "sr-only")}>
-          New chat
-        </span>
+      <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-primary-foreground/12">
+        <Plus className="h-3.5 w-3.5" strokeWidth={2.5} aria-hidden />
       </span>
-      {!collapsed && (
-        <span className="hidden items-center gap-0.5 rounded border border-primary-foreground/20 px-1.5 py-0.5 font-mono text-[10px] opacity-65 md:flex">
-          <Command className="h-2.5 w-2.5" aria-hidden /> K
-        </span>
-      )}
+      <span className={cn("truncate max-md:hidden", collapsed && "sr-only")}>
+        New chat
+      </span>
     </Link>
   );
 }

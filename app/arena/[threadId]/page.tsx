@@ -138,12 +138,10 @@ export default async function ThreadPage({
     winnerModelId:
       turn.messages.find((message) => message.id === turn.vote?.messageId)
         ?.model ?? null,
-    messageIds: Object.fromEntries(
-      turn.messages.map((message) => [message.model, message.id]),
-    ),
     lanes: turn.messages.map((message) => ({
       modelId: message.model,
       modelName: nameFor(message.model),
+      messageId: message.id,
       text: message.content,
       status:
         message.status === "SUCCESS"
@@ -151,11 +149,25 @@ export default async function ThreadPage({
           : message.status === "FAILED"
             ? ("error" as const)
             : ("unfinished" as const),
+      // Four different stories, and they were being told as one. A live check
+      // reloaded a thread mid-answer and read "This answer didn't finish"
+      // under a generation the server was still happily writing — it finished
+      // 3143 characters, fifty seconds after that page load. A STREAMING row
+      // means come back in a moment; only PENDING means nothing ever arrived.
       errorMessage:
-        message.status === "FAILED" ? "This model didn't answer." : undefined,
+        message.status === "STREAMING"
+          ? "Still being written — reload in a moment."
+          : message.status !== "FAILED"
+            ? undefined
+            : message.content.length > 0
+              ? "This answer stopped partway through."
+              : "This model didn't answer.",
       ttftMs: message.timeToFirstTokenMs ?? undefined,
-      tokensPerSecond: message.tokensPerSecond ?? undefined,
-      totalTokens: message.totalTokens ?? undefined,
+      tokensPerSecond:
+        message.tokensPerSecond !== null
+          ? Math.round(message.tokensPerSecond)
+          : undefined,
+      outputTokens: message.outputTokens ?? undefined,
     })),
   }));
 

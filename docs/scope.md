@@ -28,7 +28,8 @@ There are rough hand-drawn sketches for the arena screen, the leaderboard, and t
 | 8   | Public thread visibility & sharing          | Slice 3    | done                       |
 | 9   | Leaderboard: global & personal              | Slice 4    | built, awaiting live check |
 | 10  | Abuse protection after public sharing       | Slice 3    | done                       |
-| 11  | Starting a new chat                         | Slice 2    | built, awaiting live check |
+| 11  | Starting a new chat                         | Slice 2    | done                       |
+| 12  | The server owns what gets saved             | Slice 3    | built, awaiting live check |
 
 ## Foundation
 
@@ -265,7 +266,7 @@ Rather than gamble on client-router behavior that can't be verified from a termi
 
 As shipped: a `Plus` icon inside a small translucent chip rather than the proposed `SquarePen`, a `⌘K` hint badge on the right at `md` and up, and the label hidden below `md` so the sidebar collapses to icons on narrow screens on its own (`w-16 md:w-64`) in addition to the manual collapse toggle. Nav rows and this button share one `SIDEBAR_ROW` constant for their geometry, per the no-copy-paste rule, so their icons line up on a single grid; collapsed, the label goes `sr-only` and `title` supplies the tooltip. A broader visual pass landed alongside this (grid texture behind the main area, an "A" wordmark chip, a rust active-indicator bar on nav rows) — Feature 4's palette and rules are unchanged, so it's a refinement within the existing system rather than a new direction.
 
-**Known gap, not shipped working: the `⌘K` badge is decorative.** There is no keyboard handler bound to it anywhere in the app — the only `metaKey` reference in the codebase is the modified-click guard on this very link. The badge currently advertises a shortcut that does nothing, which is the kind of promise the error-handling rule elsewhere in this project would not tolerate. Either wire it up or drop the badge; it should not stay as-is.
+**Resolved: the `⌘K` badge is gone.** It shipped briefly as decoration — a badge advertising a shortcut with no keyboard handler behind it anywhere in the app. Given the choice between wiring it and dropping it, the user chose to drop it, so the button is now just the icon and its label. Removing it also took the `justify-between` layout and the grouping wrapper span with it, since both only existed to hold the badge apart from the label.
 
 Verified: `tsc --noEmit`, `eslint .`, `prettier --check .`, `next build` all clean. Against the running dev server, the button server-renders on all four shell pages — `/arena`, `/leaderboard`, `/models`, and a signed-out public thread — as a real `<a href="/arena">` with the rust outline classes and an `aria-hidden` icon beside a visible text label. DOM order confirms it sits above the nav (New chat → Leaderboard → Your threads).
 
@@ -275,9 +276,8 @@ Verified: `tsc --noEmit`, `eslint .`, `prettier --check .`, `next build` all cle
 - [x] Build it: `new-chat-context.tsx`, provider in `AppShell`, reset registered by the fresh-arena `ArenaClient`
 - [x] Build it: the sidebar action, shared `SIDEBAR_ROW` geometry, collapsed state
 - [x] Verify: checks clean, renders on every shell page in the right position
-- [ ] Live check: send a prompt, press New chat, confirm the turns clear and the URL returns to `/arena`
-- [ ] Live check: press New chat from a thread page and from the collapsed sidebar
-- [ ] Decide the `⌘K` badge: wire the shortcut, or remove the badge — it currently does nothing
+- [x] Live check passed (2026-08-12): the user ran the app and confirmed New chat works — turns clear, the URL returns to `/arena`, and the two review fixes above hold in the browser
+- [x] Dropped the `⌘K` badge rather than wiring it, so nothing in the UI advertises a shortcut that doesn't exist
 
 ## Slice 3: Public visibility & sharing
 
@@ -319,7 +319,7 @@ Feature 8 made every thread readable by anyone holding its link. That changed th
 - **The public thread page is an unauthenticated database read.** `/arena/[threadId]` runs a `findUnique` with the full turns → messages → vote include on every request, with no auth and no limit — anyone with a link can hammer it. **Protected.**
 - **The server actions had no rate limit.** `createTurn`, `completeMessage`, `failMessage`, and `castVote` were owner-enforced from Feature 6 but uncapped, so a scripted signed-in client could flood threads, turns, and messages while entirely bypassing `/api/chat`'s bucket. **Protected.**
 - **PII in a prompt is now permanently public.** No unshare path exists, by design. **Protected, narrowly — card numbers only.**
-- **`completeMessage` still writes client-supplied content and metrics.** A signed-in user can publish arbitrary text at a shareable URL with no model involved, and feed fabricated ttft/tok-s numbers into the global leaderboard. Rate limiting caps the volume, but the trust problem itself is **not an Arcjet rule** and is deliberately still open — recorded here rather than quietly ignored.
+- **`completeMessage` still writes client-supplied content and metrics.** A signed-in user can publish arbitrary text at a shareable URL with no model involved, and feed fabricated ttft/tok-s numbers into the global leaderboard. Rate limiting caps the volume, but the trust problem itself is **not an Arcjet rule** and is deliberately still open — recorded here rather than quietly ignored. **Resolved by Feature 12**, which deletes both client-writing actions and moves the write into the route.
 
 **Ruled out, each with a reason:**
 
@@ -360,6 +360,44 @@ One limitation of that read-back, recorded so nobody over-reads it later: both `
 - [x] Build it: shared `MessageScreen` component, `not-found`/`error` refactored onto it
 - [x] Verify: checks clean, read limit trips and recovers live, route smoke-checks pass
 - [x] Live check passed (2026-08-11): all three confirmed against the real Arcjet site — see the decision timeline below
+
+### 12. The server owns what gets saved
+
+The open item Feature 10 recorded and deliberately left alone, because it was never an Arcjet rule: `completeMessage` took the answer text **and** the metrics straight from the browser and only checked who owned the row. A signed-in user could call `createTurn`, then write whatever they liked into their own message rows. Two consequences, and the second is the one that matters: arbitrary text published at a public thread URL under a model's name, and invented speed numbers feeding the **global** leaderboard — the honest scoreboard this whole product exists to produce.
+
+**Decided and built (2026-08-12).** Writing an answer is no longer something the client can do. `completeMessage` and `failMessage` are **deleted**, not hardened — a server action that accepts an answer is the vulnerability, so the fix is that no such action exists. The only place that writes an answer is `app/api/chat/route.ts`, which is the only part of the app that actually sees what the model said.
+
+The route already `tee()`d the upstream stream to parse token usage for PostHog. That same branch now also accumulates the text, measures time-to-first-token, and writes the row. Keeping `tee()` rather than transforming the client's stream is deliberate: the record branch keeps reading even if the browser disconnects, so closing the tab mid-answer now **saves** the answer instead of stranding a `PENDING` row — strictly better than the old behaviour.
+
+**How the route finds the row without slowing anything down.** It needs a message id, but Feature 6 deliberately runs `createTurn` _alongside_ the streams so a slow write can't delay the first token — and `createTurn` now includes an Arcjet round trip, so awaiting it would be a real regression. So the client generates a `clientKey` (a UUID) per turn and sends it to both `createTurn` and `/api/chat`. The route resolves the row only when its stream **ends**, by which point the write finished long ago; a short bounded retry covers the theoretical gap. Retries and restored turns pass a `messageId` instead, since the row is already known. Both identifiers are only ever used to _locate_ a row, always scoped through the relation chain to the Clerk user, so neither can reach someone else's row — and neither carries any content. New nullable `Turn.clientKey` column, unique, with a hand-written migration (`prisma migrate dev` needs a TTY this environment doesn't have; `migrate deploy` applied it).
+
+**What the numbers mean now.** Time-to-first-token is measured server-side, so it's the model's own latency rather than the visitor's connection — more honest, and slightly different from the figure ticking on screen. The client still measures and displays its own numbers live, because that's genuine feedback about what the user is watching; the difference is that nothing it measures is ever stored.
+
+**Two behaviours that changed as a consequence, both honest:**
+
+- A stream the client abandons (stall, dropped connection, superseded) no longer writes `FAILED` — nothing is written, so the row stays `PENDING` and reads "This answer didn't finish." That's the more accurate record: the app genuinely doesn't know what the model would have said. `FAILED` is now written only by the route, which is the side that actually saw the upstream call fail.
+- Voting can no longer wait on a client-tracked write, because there isn't one. `castVote` was already the real authority (it re-checks ownership, that the turn is unvoted, and that two or more answers succeeded), so the client now simply calls it — and retries a few times only against the specific "needs at least two finished answers" reply, which is the one that means "a write is still landing". Every other refusal is shown as-is.
+
+**What this does not fix, stated plainly.** Votes stay gameable. A user can vote however they like on their own turns, and that's inherent — a vote is a subjective judgement, not a measurement. So the wins column can still be skewed by someone willing to spam their own votes; Feature 10's rate limit caps the volume, nothing more. What is fixed is **fabricated content and fabricated speed numbers**. This is not a tamper-proof leaderboard and shouldn't be described as one.
+
+Verified: `tsc --noEmit`, `eslint .`, `prettier --check .`, `next build` all clean; migration applied and `prisma migrate status` reports the database up to date. A grep confirms no reference to `completeMessage`/`failMessage` survives anywhere outside the comment that records why they're gone, and the exported server actions are now only `getOwnThreads`, `createTurn`, and `castVote`. Against the running server: `/api/chat` rejects a request carrying no target with a plain `400`, existing threads still render their restored answers and metrics, and the leaderboard still reads.
+
+- [x] Decide the approach
+- [x] Build it: `Turn.clientKey` + migration
+- [x] Build it: the route writes content and metrics from its own copy of the stream
+- [x] Build it: delete `completeMessage`/`failMessage`; client sends only a target
+- [x] Build it: voting against the server's own rows
+- [x] Verify: checks clean, actions gone, route validates, existing data still reads
+- [ ] Live check: send a prompt, then confirm the stored row matches what the model actually said
+- [ ] Live check: vote immediately as the last lane finishes, and retry a failed lane
+
+**Follow-up (2026-08-12): making a slow free model read as slow, not broken.** Reported from real use — two lanes sat on "waiting for first token…" with no sign of life while a third said "The model didn't respond". The server log settled what was actually happening, and none of it was a defect in the code above: one request ran a full **72 seconds**, and the failing lane had come back from OpenRouter as a plain `429` — `inclusionai/ling-3.0-tiny:free is temporarily rate-limited upstream` from provider Novita's shared free pool. Slow starts are simply what this tier does; the stored measurements already contained first tokens at 43s and 51s. Three changes, all about telling the truth about that rather than changing it:
+
+- **A ticking wait.** A lane with no first token yet counts the seconds out loud ("waiting for first token… 23s"). Silence for a minute reads as a hang; a counter reads as a slow model. The count only appears after the first second, so a fast start doesn't flash `0s`, and it's cleared the moment the real time-to-first-token measurement replaces it.
+- **`429` gets its own sentence.** "This model is busy right now. Try again in a moment, or pick a different one." The old copy said the model didn't respond, but it did respond — it said it was full. The distinction matters because it tells someone to wait or switch models instead of doubting their prompt.
+- **The stall watchdog was one timer doing two jobs, and is now two.** A single 60-second budget covered both "hasn't started yet" and "stopped mid-answer", which meant the 43s and 51s answers already in the database were only ever ~10s from being cut off as failures. Waiting for the first token now gets 120s; a gap _after_ tokens have started keeps 60s, since by then silence really does mean the stream died. They also fail with different sentences — "never started answering" versus "stopped partway through" — because those are different problems for the reader.
+
+Verified: `tsc --noEmit`, `eslint .`, `prettier --check .`, `next build` all clean, and the routes still serve. The timing behaviour itself is client-side and needs the browser.
 
 ## Slice 4: Leaderboard
 
