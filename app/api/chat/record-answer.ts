@@ -37,12 +37,25 @@ type StreamChunk = {
   usage?: { prompt_tokens?: number; completion_tokens?: number };
 };
 
+// Everything the stream has said so far. Read-only: each arriving chunk
+// produces a new one rather than editing this in place.
 type Reading = {
-  content: string;
-  inputTokens: number | null;
-  outputTokens: number | null;
-  firstTokenAt: number | null;
-  lastTokenAt: number | null;
+  readonly content: string;
+  readonly inputTokens: number | null;
+  readonly outputTokens: number | null;
+  readonly firstTokenAt: number | null;
+  readonly lastTokenAt: number | null;
+};
+
+// The reading plus the two things the read loop itself needs to carry between
+// chunks: the tail of a line that arrived split across a network boundary, and
+// when the last checkpoint ran. Kept as one value so the loop advances a single
+// cursor built by pure functions, rather than juggling separate mutable
+// bindings across awaits.
+type Cursor = {
+  readonly reading: Reading;
+  readonly buffer: string;
+  readonly checkpointedAt: number;
 };
 
 // How the read ended — returned, rather than tracked in a flag the rest of the
@@ -51,6 +64,14 @@ type Reading = {
 // this attempt was still streaming, so nothing measured here belongs to the
 // answer any more.
 type ReadOutcome = "complete" | "interrupted" | "superseded";
+
+const BLANK_READING: Reading = {
+  content: "",
+  inputTokens: null,
+  outputTokens: null,
+  firstTokenAt: null,
+  lastTokenAt: null,
+};
 
 // Only the metrics whose definitions are pinned in prisma/schema.prisma. A
 // value upstream never reported stays null — never estimated, never zeroed.
@@ -81,6 +102,56 @@ function parseChunk(payload: string): StreamChunk | null {
     // Not JSON — a comment or keep-alive line. Skip it.
     return null;
   }
+}
+
+// One SSE line folded into the reading. Pure: same line, same reading, same
+// answer, which is what makes the parsing rules readable on their own.
+// `arrivedAt` is the moment its chunk was read, passed in rather than measured
+// here so the clock stays at the edge.
+function absorbLine(
+  reading: Reading,
+  line: string,
+  arrivedAt: number,
+): Reading {
+  if (!line.startsWith("data: ")) return reading;
+  const payload = line.slice(6).trim();
+  if (payload === "" || payload === "[DONE]") return reading;
+  const chunk = parseChunk(payload);
+  if (!chunk) return reading;
+
+  const delta = chunk.choices?.[0]?.delta?.content;
+  const withText =
+    typeof delta === "string" && delta.length > 0
+      ? {
+          ...reading,
+          content: reading.content + delta,
+          firstTokenAt: reading.firstTokenAt ?? arrivedAt,
+          lastTokenAt: arrivedAt,
+        }
+      : reading;
+
+  // ?? rather than ||, so a genuine zero from upstream is kept as a zero.
+  return {
+    ...withText,
+    inputTokens: chunk.usage?.prompt_tokens ?? withText.inputTokens,
+    outputTokens: chunk.usage?.completion_tokens ?? withText.outputTokens,
+  };
+}
+
+// One decoded chunk folded into the cursor. Whatever follows the last newline
+// is not a whole line yet and is carried forward to be completed by the chunk
+// after it.
+function absorb(cursor: Cursor, text: string, arrivedAt: number): Cursor {
+  const lines = (cursor.buffer + text).split("\n");
+  const buffer = lines.pop() ?? "";
+  return {
+    ...cursor,
+    buffer,
+    reading: lines.reduce(
+      (reading, line) => absorbLine(reading, line, arrivedAt),
+      cursor.reading,
+    ),
+  };
 }
 
 // Writes down what has arrived so far. Returns whether this attempt still owns
@@ -135,70 +206,54 @@ async function stillOwned(details: Recording): Promise<boolean> {
   }
 }
 
-// Drains the server's own copy of the upstream stream into `reading`, pausing
-// on the checkpoint interval to save progress and to confirm the row is still
-// this attempt's to write.
+// Drains the server's own copy of the upstream stream, pausing on the
+// checkpoint interval to save progress and to confirm the row is still this
+// attempt's to write. Advances one cursor; every new value of it comes from a
+// pure fold of the chunk that just arrived.
 async function readStream(
   branch: ReadableStream<Uint8Array>,
-  reading: Reading,
   details: Recording,
-): Promise<ReadOutcome> {
+): Promise<{ outcome: ReadOutcome; reading: Reading }> {
   const reader = branch.getReader();
   const decoder = new TextDecoder();
-  let buffer = "";
-  let checkpointedAt = 0;
+  let cursor: Cursor = {
+    reading: BLANK_READING,
+    buffer: "",
+    checkpointedAt: 0,
+  };
 
   try {
     for (;;) {
       const { done, value } = await reader.read();
-      if (done) return "complete";
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split("\n");
-      buffer = lines.pop() ?? "";
+      if (done) return { outcome: "complete", reading: cursor.reading };
 
-      for (const line of lines) {
-        if (!line.startsWith("data: ")) continue;
-        const payload = line.slice(6).trim();
-        if (payload === "" || payload === "[DONE]") continue;
-        const chunk = parseChunk(payload);
-        if (!chunk) continue;
+      cursor = absorb(
+        cursor,
+        decoder.decode(value, { stream: true }),
+        performance.now(),
+      );
 
-        const delta = chunk.choices?.[0]?.delta?.content;
-        if (typeof delta === "string" && delta.length > 0) {
-          const now = performance.now();
-          if (reading.firstTokenAt === null) reading.firstTokenAt = now;
-          reading.lastTokenAt = now;
-          reading.content += delta;
-        }
-        if (typeof chunk.usage?.prompt_tokens === "number") {
-          reading.inputTokens = chunk.usage.prompt_tokens;
-        }
-        if (typeof chunk.usage?.completion_tokens === "number") {
-          reading.outputTokens = chunk.usage.completion_tokens;
-        }
-      }
+      // Reported after the chunk is folded in, not before: the chunk carrying
+      // the first token would otherwise still say there was no token yet,
+      // leaving the watchdog on the generous initial-response budget when it
+      // should already have switched to the shorter between-token one.
+      details.onProgress(cursor.reading.firstTokenAt !== null);
 
-      // Reported after the chunk is parsed, not before: the chunk carrying the
-      // first token would otherwise still say there was no token yet, leaving
-      // the watchdog on the generous initial-response budget when it should
-      // already have switched to the shorter between-token one.
-      details.onProgress(reading.firstTokenAt !== null);
-
-      if (performance.now() - checkpointedAt > CHECKPOINT_MS) {
-        checkpointedAt = performance.now();
+      if (performance.now() - cursor.checkpointedAt > CHECKPOINT_MS) {
         // Asked on every interval, with or without text to save, so a stream
         // that has yet to produce anything visible still finds out it has been
         // replaced instead of running on unwatched to the end.
         const ours =
-          reading.content.length > 0
-            ? await checkpoint(reading, details)
+          cursor.reading.content.length > 0
+            ? await checkpoint(cursor.reading, details)
             : await stillOwned(details);
         if (!ours) {
           // Let go of the upstream rather than reading to the end of an answer
           // nobody is waiting for.
           await reader.cancel().catch(() => {});
-          return "superseded";
+          return { outcome: "superseded", reading: cursor.reading };
         }
+        cursor = { ...cursor, checkpointedAt: performance.now() };
       }
     }
   } catch (cause) {
@@ -206,7 +261,7 @@ async function readStream(
       messageId: details.messageId,
       cause,
     });
-    return "interrupted";
+    return { outcome: "interrupted", reading: cursor.reading };
   }
 }
 
@@ -220,15 +275,7 @@ export async function recordAnswer(
   branch: ReadableStream<Uint8Array>,
   details: Recording,
 ): Promise<AnswerResult | null> {
-  const reading: Reading = {
-    content: "",
-    inputTokens: null,
-    outputTokens: null,
-    firstTokenAt: null,
-    lastTokenAt: null,
-  };
-
-  const outcome = await readStream(branch, reading, details);
+  const { outcome, reading } = await readStream(branch, details);
 
   // A stream that died partway is FAILED, not SUCCESS — but the text it did
   // produce is kept, because that text is genuinely what the model said. Only
