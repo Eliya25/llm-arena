@@ -26,6 +26,9 @@ export type AnswerRow = {
   threadId: string;
   turnId: string;
   messageId: string;
+  // The try this request owns. Every write it makes names this number, so a
+  // previous attempt still streaming somewhere cannot write over it.
+  attempt: number;
 };
 
 // A row about to be streamed into. Also what a retry resets its row back to,
@@ -177,19 +180,8 @@ export async function claimAnswerRow(params: {
 
   const ids = { threadId: turn.threadId, turnId: turn.id };
 
-  const existing = await prisma.message.findUnique({
-    where: { turnId_model: { turnId: turn.id, model } },
-    select: { id: true },
-  });
-  if (existing) {
-    await prisma.message.update({
-      where: { id: existing.id },
-      data: blankAnswer,
-    });
-    return { ...ids, messageId: existing.id };
-  }
-
-  const created = await findOrCreate(
+  // First make sure the row exists at all...
+  const row = await findOrCreate(
     () =>
       prisma.message.findUnique({
         where: { turnId_model: { turnId: turn.id, model } },
@@ -201,5 +193,21 @@ export async function claimAnswerRow(params: {
         select: { id: true },
       }),
   );
-  return created ? { ...ids, messageId: created.id } : null;
+  if (!row) return null;
+
+  // ...then take ownership of it, always by increment — including on a row
+  // this request just created, because two requests that raced into creating
+  // it would otherwise both believe they own attempt 0 and both write.
+  //
+  // For a retry the increment is the handover: whatever was still writing to
+  // this row for the previous try now names an attempt the row no longer
+  // holds, so its updates match nothing and it stops. It happens in the same
+  // statement that blanks the row, so there is no moment where an attempt is
+  // claimed but not yet protected.
+  const claimed = await prisma.message.update({
+    where: { id: row.id },
+    data: { ...blankAnswer, attempt: { increment: 1 } },
+    select: { id: true, attempt: true },
+  });
+  return { ...ids, messageId: claimed.id, attempt: claimed.attempt };
 }

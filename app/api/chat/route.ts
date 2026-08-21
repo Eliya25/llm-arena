@@ -56,7 +56,7 @@ function isValidMessage(value: unknown): value is ChatMessage {
 // it, every resting number on screen is a value read back out of the database.
 // It also means a lane cannot read "finished" before its row is written, which
 // is what the vote rules are checked against.
-function withFinalFrame(result: Promise<AnswerResult>) {
+function withFinalFrame(result: Promise<AnswerResult | null>) {
   const encoder = new TextEncoder();
   return new TransformStream<Uint8Array, Uint8Array>({
     transform(chunk, controller) {
@@ -303,7 +303,7 @@ export async function POST(request: NextRequest) {
     }
 
     // The browser can't write this outcome, so the route records it.
-    await markAnswerFailed(row.messageId);
+    await markAnswerFailed(row.messageId, row.attempt);
 
     // A 429 from upstream isn't silence — the model answered, and the answer
     // was "I'm full". Free-tier models share a provider pool, so this is the
@@ -344,6 +344,7 @@ export async function POST(request: NextRequest) {
   const [clientBranch, recordBranch] = upstream.body.tee();
   const recording = recordAnswer(recordBranch, {
     messageId: row.messageId,
+    attempt: row.attempt,
     model,
     distinctId,
     upstreamAt,

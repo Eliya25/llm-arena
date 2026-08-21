@@ -72,6 +72,9 @@ export async function recordAnswer(
   branch: ReadableStream<Uint8Array>,
   details: {
     messageId: string;
+    // The try this recorder owns. Every write it makes is conditioned on it,
+    // so once a retry has claimed the row this recorder writes nothing.
+    attempt: number;
     model: string;
     distinctId: string;
     upstreamAt: number;
@@ -79,7 +82,7 @@ export async function recordAnswer(
     // tell a slow model from a dead one.
     onProgress: (hasFirstToken: boolean) => void;
   },
-): Promise<AnswerResult> {
+): Promise<AnswerResult | null> {
   const reading: Reading = {
     content: "",
     inputTokens: null,
@@ -89,19 +92,26 @@ export async function recordAnswer(
     complete: false,
   };
 
+  // Set once a write finds the row has moved on to a later attempt: a retry
+  // owns this answer now, and everything measured here belongs to a try the
+  // user already replaced. The honest thing is to stop, not to publish it.
+  let superseded = false;
+
   // Checkpoints are best-effort: a failed intermediate write must not abandon
   // a stream that is still arriving, since the final write may well succeed.
   let checkpointedAt = 0;
   const checkpoint = async () => {
     checkpointedAt = performance.now();
     try {
-      await prisma.message.update({
-        where: { id: details.messageId },
+      const written = await prisma.message.updateMany({
+        where: { id: details.messageId, attempt: details.attempt },
         data: { content: reading.content, status: "STREAMING" },
       });
+      if (written.count === 0) superseded = true;
     } catch (cause) {
       console.error("Checkpointing an answer failed", {
         messageId: details.messageId,
+        attempt: details.attempt,
         cause,
       });
     }
@@ -152,6 +162,9 @@ export async function recordAnswer(
         performance.now() - checkpointedAt > CHECKPOINT_MS
       ) {
         await checkpoint();
+        // A retry took the row while this was streaming. Reading on would only
+        // burn an upstream connection to write an answer nobody is waiting for.
+        if (superseded) break;
       }
     }
     reading.complete = true;
@@ -176,8 +189,11 @@ export async function recordAnswer(
     reading.complete && reading.content.length > 0 ? "SUCCESS" : "FAILED";
 
   try {
-    await prisma.message.update({
-      where: { id: details.messageId },
+    // Conditioned on the attempt, so this is a no-op once a retry has claimed
+    // the row — the write that would otherwise land here is precisely the one
+    // that used to overwrite a newer answer with an older one.
+    const written = await prisma.message.updateMany({
+      where: { id: details.messageId, attempt: details.attempt },
       data: {
         content: reading.content,
         status,
@@ -186,9 +202,17 @@ export async function recordAnswer(
         outputTokens: reading.outputTokens,
       },
     });
+    if (written.count === 0) {
+      superseded = true;
+      console.warn("Discarded a superseded answer", {
+        messageId: details.messageId,
+        attempt: details.attempt,
+      });
+    }
   } catch (cause) {
     console.error("Persisting an answer failed", {
       messageId: details.messageId,
+      attempt: details.attempt,
       cause,
     });
   }
@@ -211,24 +235,31 @@ export async function recordAnswer(
     await posthog.flush();
   }
 
-  return {
-    status,
-    outputTokens: reading.outputTokens,
-    ...metrics,
-  };
+  // Null means nothing was stored, so there is nothing authoritative to tell
+  // the browser — the route simply omits its closing frame.
+  return superseded
+    ? null
+    : {
+        status,
+        outputTokens: reading.outputTokens,
+        ...metrics,
+      };
 }
 
 // The model never answered at all, so the row says so. Written here because
 // the route is the only side that knows the upstream call failed.
-export async function markAnswerFailed(messageId: string) {
+export async function markAnswerFailed(messageId: string, attempt: number) {
   try {
-    await prisma.message.update({
-      where: { id: messageId },
+    // Conditioned like every other write here: if a retry already claimed the
+    // row, this attempt's failure is not the row's story any more.
+    await prisma.message.updateMany({
+      where: { id: messageId, attempt },
       data: { status: "FAILED" },
     });
   } catch (cause) {
     console.error("Marking an answer failed did not persist", {
       messageId,
+      attempt,
       cause,
     });
   }
