@@ -30,7 +30,8 @@ There's no formal spec-file system here, no numbered acceptance criteria, no sep
 - Never show a raw exception or provider error to the user. A plain, human sentence and a retry action, always.
 - Shared values, spacing, color, repeated UI patterns, live in `globals.css` or a shared component, never copy-pasted as raw Tailwind classes across files. If the same handful of classes show up in three places, that's a component, not a coincidence.
 - After building or changing anything, actually run it, typecheck, lint, and a real build, not just read the code and assume it's right. Fix whatever fails before calling the step done.
-- No test runner, no browser automation framework, for this project. Verify manually, a running dev server and a real browser, or something as light as `curl`. That's already decided, not something to add later, don't install one to check something works.
+- No browser automation framework. Real flows are verified by hand, a running dev server and a real browser, or something as light as `curl`. That part has not changed and is not up for revisiting: a screen is verified by looking at it.
+- An automated suite is allowed, and only for what a person cannot see (decided 2026-08-21, `scope-v2.md` Feature 5). V2 is concurrency, races, and stale writes, and those have no visual representation at all — during Feature 1 a change quietly recorded a 2500ms generation as 4804ms, straight into the number the leaderboard ranks on, and it looked completely innocent in review. It was caught by re-running a throwaway script, which was then deleted, for the sixth time. Tests exist to keep bugs that already happened from happening twice; they never replace the browser pass, and nothing gets installed merely to check that something works once.
 
 ## Design
 

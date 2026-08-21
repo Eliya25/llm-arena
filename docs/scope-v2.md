@@ -605,6 +605,16 @@ V1 has strong manual and PR-time verification, but important behavior should sur
 
 The most valuable tests are the ones protecting bugs that already occurred or invariants that would be expensive to rediscover.
 
+### The rule this feature had to resolve first (2026-08-21)
+
+`CLAUDE.md` carried a standing rule — "no test runner, no browser automation framework... that's already decided, not something to add later" — which contradicted this feature outright. Recorded rather than quietly worked around, and settled by the owner: the rule was written for V1, where features were screens a person could look at. V2 is concurrency, races, and stale writes, which have no visual representation at all.
+
+`CLAUDE.md` now allows an automated suite **only for what a person cannot see**, and keeps the ban on browser automation exactly as it was. The manual browser pass stays mandatory.
+
+The evidence that settled it came from Feature 1's own review rounds: a change recorded a 2500ms generation as 4804ms — the number the leaderboard ranks models by — and it read as completely innocent in the diff. It was caught by re-running a throwaway script. Ten such scripts were written and deleted across that feature, rebuilding the same six scenarios each time: the retry collision, exact metrics, a truncated read, empty-but-clean, the watchdog signal, and supersession. Those are the first tests to write, because they are the bugs that already happened.
+
+Tooling is still open (see the checklist). Note for whoever picks it: the throwaway scripts ran on `node --experimental-transform-types` with a hand-written loader for the `@/` alias, which works but leans on an experimental flag. That tradeoff — zero dependencies against a runner that handles TypeScript and path aliases natively — is the actual decision to make.
+
 ### Testing layers
 
 #### Unit tests
