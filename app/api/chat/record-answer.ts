@@ -115,7 +115,6 @@ export async function recordAnswer(
     for (;;) {
       const { done, value } = await reader.read();
       if (done) break;
-      details.onProgress(reading.firstTokenAt !== null);
       buffer += decoder.decode(value, { stream: true });
       const lines = buffer.split("\n");
       buffer = lines.pop() ?? "";
@@ -141,6 +140,12 @@ export async function recordAnswer(
           reading.outputTokens = chunk.usage.completion_tokens;
         }
       }
+
+      // Reported after the chunk is parsed, not before: the chunk carrying the
+      // first token would otherwise still say there was no token yet, leaving
+      // the watchdog on the generous initial-response budget when it should
+      // already have switched to the shorter between-token one.
+      details.onProgress(reading.firstTokenAt !== null);
 
       if (
         reading.content.length > 0 &&
