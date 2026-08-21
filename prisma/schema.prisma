@@ -50,6 +50,12 @@ model Message {
   // partway still keeps what the model actually said.
   content String
   status  MessageStatus @default(PENDING)
+  // Which try at this answer is the live one. A retry reuses the row rather
+  // than adding a second answer for the same model, so this is what tells the
+  // two apart: every write the recorder makes names the attempt it belongs to,
+  // and a previous attempt still streaming somewhere updates nothing instead
+  // of overwriting the answer that replaced it.
+  attempt Int           @default(0)
   // Definitions are pinned deliberately, because the leaderboard ranks models
   // on them (docs/scope-v2.md Feature 1D):
   //   timeToFirstTokenMs   upstream response headers -> first content delta.
