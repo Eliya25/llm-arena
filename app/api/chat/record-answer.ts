@@ -47,15 +47,32 @@ type Reading = {
   readonly lastTokenAt: number | null;
 };
 
-// The reading plus the two things the read loop itself needs to carry between
-// chunks: the tail of a line that arrived split across a network boundary, and
-// when the last checkpoint ran. Kept as one value so the loop advances a single
-// cursor built by pure functions, rather than juggling separate mutable
-// bindings across awaits.
+// What one arrival from upstream turned out to be, or that the checkpoint
+// interval came due first. The loop waits on both at once, so its own clock
+// keeps running through a silence the model never breaks.
+// A chunk carries the moment it landed, stamped the instant the read resolved
+// rather than whenever the loop gets round to folding it in. Those are not the
+// same instant any more: a checkpoint can come due while a chunk is already
+// waiting, and the database write that follows would otherwise be charged to
+// the model as generation time.
+type Arrival =
+  | { readonly kind: "chunk"; readonly value: Uint8Array; readonly at: number }
+  | { readonly kind: "end" }
+  | { readonly kind: "due" };
+
+// The reading plus what the read loop itself carries between chunks: the tail
+// of a line that arrived split across a network boundary, when the last
+// checkpoint ran, and the read that is currently outstanding — held rather than
+// re-issued, because a checkpoint coming due must not consume or discard the
+// chunk the stream is still in the middle of delivering.
+//
+// Kept as one value so the loop advances a single cursor built by pure
+// functions, rather than juggling separate mutable bindings across awaits.
 type Cursor = {
   readonly reading: Reading;
   readonly buffer: string;
   readonly checkpointedAt: number;
+  readonly pending: Promise<Arrival>;
 };
 
 // How the read ended — returned, rather than tracked in a flag the rest of the
@@ -206,10 +223,48 @@ async function stillOwned(details: Recording): Promise<boolean> {
   }
 }
 
-// Drains the server's own copy of the upstream stream, pausing on the
+// The next thing upstream has to say, as an Arrival.
+function nextArrival(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+): Promise<Arrival> {
+  return reader
+    .read()
+    .then(({ done, value }) =>
+      done || !value
+        ? ({ kind: "end" } as const)
+        : ({ kind: "chunk", value, at: performance.now() } as const),
+    );
+}
+
+// Whichever comes first: the outstanding read, or the checkpoint falling due.
+// The timer is always cleared, including when the read rejects — an orphaned
+// timeout would hold the process awake for no reason.
+async function nextEvent(
+  pending: Promise<Arrival>,
+  waitMs: number,
+): Promise<Arrival> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const due = new Promise<Arrival>((resolve) => {
+    timer = setTimeout(() => resolve({ kind: "due" }), waitMs);
+  });
+  try {
+    return await Promise.race([pending, due]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// Drains the server's own copy of the upstream stream, breaking off on the
 // checkpoint interval to save progress and to confirm the row is still this
 // attempt's to write. Advances one cursor; every new value of it comes from a
 // pure fold of the chunk that just arrived.
+//
+// The interval is waited on alongside the read rather than checked after one
+// returns. A stream can fall silent for a long time and still be perfectly
+// healthy, and a check that only runs when a chunk arrives cannot notice
+// anything during that silence — including that a retry has taken the row,
+// which used to leave the replaced generation holding a model connection until
+// the next chunk or the stall watchdog, up to a minute or two later.
 async function readStream(
   branch: ReadableStream<Uint8Array>,
   details: Recording,
@@ -219,42 +274,59 @@ async function readStream(
   let cursor: Cursor = {
     reading: BLANK_READING,
     buffer: "",
-    checkpointedAt: 0,
+    checkpointedAt: performance.now(),
+    pending: nextArrival(reader),
   };
 
   try {
     for (;;) {
-      const { done, value } = await reader.read();
-      if (done) return { outcome: "complete", reading: cursor.reading };
-
-      cursor = absorb(
-        cursor,
-        decoder.decode(value, { stream: true }),
-        performance.now(),
+      const event = await nextEvent(
+        cursor.pending,
+        // Whatever is left of this interval, so a busy stream still checkpoints
+        // every couple of seconds instead of restarting the clock on each chunk.
+        Math.max(
+          0,
+          CHECKPOINT_MS - (performance.now() - cursor.checkpointedAt),
+        ),
       );
+
+      if (event.kind === "due") {
+        // Asked with or without text to save, so a stream that has yet to
+        // produce anything visible still finds out it has been replaced.
+        const ours =
+          cursor.reading.content.length > 0
+            ? await checkpoint(cursor.reading, details)
+            : await stillOwned(details);
+        if (!ours) {
+          // Let go of the upstream rather than holding a connection open for an
+          // answer nobody is waiting for.
+          await reader.cancel().catch(() => {});
+          return { outcome: "superseded", reading: cursor.reading };
+        }
+        // The read is still outstanding and stays that way — only the clock
+        // moves on.
+        cursor = { ...cursor, checkpointedAt: performance.now() };
+        continue;
+      }
+
+      if (event.kind === "end") {
+        return { outcome: "complete", reading: cursor.reading };
+      }
+
+      cursor = {
+        ...absorb(
+          cursor,
+          decoder.decode(event.value, { stream: true }),
+          event.at,
+        ),
+        pending: nextArrival(reader),
+      };
 
       // Reported after the chunk is folded in, not before: the chunk carrying
       // the first token would otherwise still say there was no token yet,
       // leaving the watchdog on the generous initial-response budget when it
       // should already have switched to the shorter between-token one.
       details.onProgress(cursor.reading.firstTokenAt !== null);
-
-      if (performance.now() - cursor.checkpointedAt > CHECKPOINT_MS) {
-        // Asked on every interval, with or without text to save, so a stream
-        // that has yet to produce anything visible still finds out it has been
-        // replaced instead of running on unwatched to the end.
-        const ours =
-          cursor.reading.content.length > 0
-            ? await checkpoint(cursor.reading, details)
-            : await stillOwned(details);
-        if (!ours) {
-          // Let go of the upstream rather than reading to the end of an answer
-          // nobody is waiting for.
-          await reader.cancel().catch(() => {});
-          return { outcome: "superseded", reading: cursor.reading };
-        }
-        cursor = { ...cursor, checkpointedAt: performance.now() };
-      }
     }
   } catch (cause) {
     console.error("Answer stream read failed", {
