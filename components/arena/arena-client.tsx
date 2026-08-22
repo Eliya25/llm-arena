@@ -10,6 +10,7 @@ import type { CatalogModel } from "@/lib/openrouter";
 import { castVote } from "@/app/arena/actions";
 import { useNewChat } from "@/components/app-shell/new-chat-context";
 import { useThreads } from "@/components/app-shell/threads-context";
+import { buildHistory, type ChatMessage } from "./build-history";
 import { MAX_SELECTED_MODELS, PromptBox } from "./prompt-box";
 
 // "unfinished" only exists on reloaded turns: a row the server never got past
@@ -47,8 +48,6 @@ type TurnView = {
   winnerModelId: string | null;
   voteError?: string;
 };
-
-type ChatMessage = { role: "user" | "assistant"; content: string };
 
 // How a stream tells the route which row it belongs to. `turnId` when the turn
 // already exists — a retry, or a lane on a reloaded thread. Otherwise the keys
@@ -111,12 +110,6 @@ const STALL_REASON = "stall";
 const SUPERSEDED_REASON = "superseded";
 // How often the "still waiting" readout ticks before the first token.
 const WAITING_TICK_MS = 1000;
-// Matches the server's per-message content cap, so a giant answer in the
-// history gets trimmed instead of failing the whole follow-up.
-const MAX_HISTORY_CONTENT = 32_000;
-// Matches the server's message-count cap — a long thread keeps the most
-// recent exchanges and drops the oldest instead of failing every lane.
-const MAX_HISTORY_MESSAGES = 40;
 // Rough characters-per-token for the live streaming readout only — the final
 // numbers always come from OpenRouter's real usage block.
 const CHARS_PER_TOKEN = 4;
@@ -270,37 +263,6 @@ export function ArenaClient({
             }
           : turn,
       ),
-    );
-  }
-
-  // Each model only ever sees its own previous answers — never another
-  // model's words (docs/scope.md Feature 6: separate conversations).
-  function buildHistory(
-    modelId: string,
-    priorTurns: TurnView[],
-    promptText: string,
-  ): ChatMessage[] {
-    const history: ChatMessage[] = [];
-    for (const turn of priorTurns) {
-      history.push({
-        role: "user",
-        content: turn.prompt.slice(0, MAX_HISTORY_CONTENT),
-      });
-      const lane = turn.lanes.find((l) => l.modelId === modelId);
-      if (lane && lane.status === "done" && lane.text.length > 0) {
-        history.push({
-          role: "assistant",
-          content: lane.text.slice(0, MAX_HISTORY_CONTENT),
-        });
-      }
-    }
-    history.push({ role: "user", content: promptText });
-    // The cap can land mid-exchange, stranding an assistant answer whose
-    // question was cut off — drop it so history always opens with a user
-    // message and every retained answer keeps its originating question.
-    const trimmed = history.slice(-MAX_HISTORY_MESSAGES);
-    return trimmed.slice(
-      trimmed.findIndex((message) => message.role === "user"),
     );
   }
 
