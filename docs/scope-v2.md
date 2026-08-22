@@ -605,6 +605,16 @@ V1 has strong manual and PR-time verification, but important behavior should sur
 
 The most valuable tests are the ones protecting bugs that already occurred or invariants that would be expensive to rediscover.
 
+### The rule this feature had to resolve first (2026-08-21)
+
+`CLAUDE.md` carried a standing rule — "no test runner, no browser automation framework... that's already decided, not something to add later" — which contradicted this feature outright. Recorded rather than quietly worked around, and settled by the owner: the rule was written for V1, where features were screens a person could look at. V2 is concurrency, races, and stale writes, which have no visual representation at all.
+
+`CLAUDE.md` now allows an automated suite **only for what a person cannot see**, and keeps the ban on browser automation exactly as it was. The manual browser pass stays mandatory.
+
+The evidence that settled it came from Feature 1's own review rounds: a change recorded a 2500ms generation as 4804ms — the number the leaderboard ranks models by — and it read as completely innocent in the diff. It was caught by re-running a throwaway script. Ten such scripts were written and deleted across that feature, rebuilding the same six scenarios each time: the retry collision, exact metrics, a truncated read, empty-but-clean, the watchdog signal, and supersession. Those are the first tests to write, because they are the bugs that already happened.
+
+Tooling is still open (see the checklist). Note for whoever picks it: the throwaway scripts ran on `node --experimental-transform-types` with a hand-written loader for the `@/` alias, which works but leans on an experimental flag. That tradeoff — zero dependencies against a runner that handles TypeScript and path aliases natively — is the actual decision to make.
+
 ### Testing layers
 
 #### Unit tests
@@ -660,19 +670,77 @@ Important examples already encountered:
 - paid model injection
 - anonymous OpenRouter usage
 
+### Plan (2026-08-21)
+
+**The second contradiction, resolved first.** The E2E section above asks for automated browser flows, and `CLAUDE.md` keeps its ban on browser automation — deliberately, and not up for revisiting. So automated E2E is **out of scope for this feature**, and the checklist item is struck rather than silently skipped. The manual browser pass covers those flows and has earned its keep: the owner reloading a page mid-answer is what exposed both of Feature 1's live defects. What replaces automated E2E is a written pass list, so the manual check is repeatable instead of improvised each time.
+
+**What gets written first, and why exactly these.** Not a survey of the codebase — the six scenarios that were rebuilt as throwaway scripts ten times during Feature 1, because each one already caught something:
+
+1. **Retry collision.** Attempt 1 streaming, retry claims the row, attempt 1 finishes last. Caught a real overwrite: the row held the old attempt's text and 999 tokens.
+2. **Metric exactness.** A stream with a known shape must record the ttft and duration it actually had. Caught a 2500ms generation recorded as 4804ms.
+3. **Truncated read.** Partial text kept, stored `FAILED`.
+4. **Clean but empty.** `FAILED`, so an empty card cannot be voted for.
+5. **Watchdog signal.** The chunk carrying the first token reports `true`, so the short between-token budget arms. Caught an off-by-one-chunk.
+6. **Supersession.** Detected both when no visible text has arrived and during total silence, releasing the upstream.
+
+**Then the trust boundary**, which has never had an automated check at all: a borrowed `clientKey`/`threadKey`/`turnId` must not reach another user's thread; three racing lanes must converge on one thread and one turn; a vote needs two `SUCCESS` answers, an owned turn, and cannot be cast twice.
+
+**Then the pure logic.** Cheap and fast, no database: `measure`, `absorbLine`/`absorb`, `parseChunk`, `isValidMessage`, and the leaderboard tally. Two of these need a small extraction first, and the extraction is worth it on its own:
+
+- `buildHistory` lives inside `arena-client.tsx` and holds a V1 regression rule — history must not open with an orphan assistant message. It moves to its own module.
+- The leaderboard's tally is currently welded to its query. The counting rule separates from the fetching.
+
+**Where tests live.** Beside the code, per the folder-by-feature rule: `app/api/chat/record-answer.test.ts`, not a top-level `tests/` tree.
+
+**Deliberately not doing.** No coverage target — the scope already says not to chase a percentage. No mocking of Prisma; the database tests use a real database, because the bugs being protected against are database-behaviour bugs (unique constraints, conditional updates, atomic increments) that a mock would happily fake.
+
+**Decided (2026-08-21).**
+
+**Runner: Vitest**, one dev dependency. It runs TypeScript and resolves the `@/` alias out of `tsconfig` on its own. The alternative was `node --test` with zero dependencies, rejected because getting it there needs `--experimental-transform-types` plus the hand-written module loader the throwaway scripts used — an experimental flag that can move under us on the next Node release, and infrastructure code of our own to maintain. Six of the first tests are about the timing of concurrent streams, which is where a runner earns its keep.
+
+**Database: a separate Prisma Postgres instance**, reached through its own `TEST_DATABASE_URL`. The tests can then be destructive and clean completely, and no bug in a test can reach real threads — the throwaway scripts were writing to the live database with random `clerkId`s and a delete at the end, which worked but only because nothing went wrong. Feature 9 needs this anyway: CI cannot point at the product's database. A local Postgres in Docker was the other candidate, rejected for adding a Docker prerequisite to simply running the checks.
+
+Environment handling follows the existing fail-fast rule: `TEST_DATABASE_URL` is required by the test setup, not by `lib/env.ts`, so the app itself never gains a variable it does not use. Migrations run against it with `prisma migrate deploy` before the suite.
+
+### Built so far (2026-08-22) — the half that needs no database
+
+Vitest is in as a dev dependency, `pnpm test` runs it, and `vitest.config.mts` declares the `@/` alias itself rather than pulling in a plugin to read `tsconfig`. **49 tests pass in under 200ms**, none of them touching a database or requiring an environment variable.
+
+Three extractions made that possible, and each is worth having on its own:
+
+- **`components/arena/build-history.ts`** — was a closure inside a 900-line component, holding a V1 regression rule (history must never open with an orphan assistant message, because the server rejects it and the whole turn fails). Now a pure function with seven tests, including that rule.
+- **`app/leaderboard/tally.ts`** — the counting rule was welded to its query. Wins, participation, dedupe, and the three-level ranking are now readable and checked, including that a model with no measurements publishes `null` rather than a zero that would read as the slowest model in the arena.
+- **`app/api/chat/stream-reading.ts`** and **`request-shape.ts`** — the SSE fold, the metric definitions, and the request wall, all pulled out of modules that import Prisma and Arcjet. This is why the unit suite needs no environment: the fail-fast env check fired on the first run, which was the rule working exactly as intended and a fair sign the pure logic was sitting in the wrong place.
+
+`app/api/chat/route.ts` lost its inline validation to `readChatRequest`, so `POST` now opens with three lines instead of thirty.
+
+Notable tests, in the sense of "this would have caught something real": the reasoning-model rate (829 tokens over 49 characters must read 135 tok/s, not 3152), a role-only opening frame not counting as a first token, an SSE line split mid-JSON across two chunks, a reported zero staying zero instead of falling back to null, and history trimming that strands an answer whose question was cut off.
+
+**The database half (2026-08-22).** A second Prisma Postgres instance, reached through `TEST_DATABASE_URL`. **73 tests pass** — 49 unit in 175ms, 24 against the database in about 65 seconds.
+
+Two suites, declared as separate Vitest projects rather than separated by convention. `unit` has no setup file, so a unit test cannot quietly start needing a database without moving to a `.db.test.ts` file first. `database` runs with `fileParallelism: false`, since rows are shared state and parallel files would race each other's counts.
+
+Two guards, both confirmed by running them: with `TEST_DATABASE_URL` unset the suite stops with a sentence explaining what to create, and it deliberately does not fall back to `DATABASE_URL`; if the two are the same string it refuses outright, because these tests create, rewrite and delete rows and would happily do that to real threads. Pointing `lib/prisma` at the test database is done by the setup file reassigning `process.env.DATABASE_URL` before any module loads, so no production code learns that testing exists.
+
+Covered now, each one previously a throwaway script: three lanes converging on one thread and turn; two lanes racing the same model getting distinct attempts; a retry reusing and blanking its row while keeping the turn's original prompt; borrowed `clientKey`, `threadKey`, `turnId` and `threadId` all returning nothing rather than someone else's data; the abandoned-row sweep firing on old rows, sparing fresh ones, and never reaching another user's; a clean stream's stored metrics matching what the browser was told; the 2500ms-not-4804ms regression; a mid-flight checkpoint; a truncated read keeping its text; empty-but-clean stored `FAILED`; the watchdog signal; a replaced attempt failing to overwrite, failing to mark failed, and releasing its upstream both when it has produced no visible text and when the upstream has gone completely silent.
+
+One thing the pooled endpoint settled along the way: `prisma migrate deploy` runs against it fine, so no direct connection string was needed. Round trips to it measure 94ms, against 247ms to the app's own database.
+
+**Not covered, knowingly:** `castVote`'s rules. Reaching it means mocking Clerk and Arcjet, and this feature deliberately avoids mocks. The rule worth protecting there — a vote needs two `SUCCESS` answers and an owned, unvoted turn — is a candidate for the same extraction treatment `tallyLeaderboard` got, which would make it testable without a mock in sight. Left for Feature 2, which owns vote lifecycle anyway.
+
 ### Philosophy
 
 Do not chase percentage coverage.
 
 Protect important behavior.
 
-- [ ] Choose test tooling
-- [ ] Add unit-test foundation
-- [ ] Add database integration-test setup
-- [ ] Cover authorization/trust boundaries
-- [ ] Cover streaming lifecycle
-- [ ] Cover concurrency regressions
-- [ ] Add core browser E2E flow
+- [x] Choose test tooling — Vitest, against a separate Prisma Postgres instance
+- [x] Add unit-test foundation — Vitest, 49 tests, no database or env needed
+- [x] Add database integration-test setup — separate Prisma Postgres instance, two guards against ever reaching the app's own
+- [x] Cover authorization/trust boundaries
+- [x] Cover streaming lifecycle
+- [x] Cover concurrency regressions
+- [x] Manual pass list written (`docs/manual-pass.md`), replacing automated E2E — **dropped**, conflicts with the retained browser-automation ban; replaced by a written manual pass list
 - [ ] Run the suite in CI
 
 ---
