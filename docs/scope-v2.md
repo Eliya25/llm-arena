@@ -716,7 +716,17 @@ Three extractions made that possible, and each is worth having on its own:
 
 Notable tests, in the sense of "this would have caught something real": the reasoning-model rate (829 tokens over 49 characters must read 135 tok/s, not 3152), a role-only opening frame not counting as a first token, an SSE line split mid-JSON across two chunks, a reported zero staying zero instead of falling back to null, and history trimming that strands an answer whose question was cut off.
 
-**Still to build:** the six integration scenarios and the trust-boundary tests. Both need `TEST_DATABASE_URL`, which is the owner's to create.
+**The database half (2026-08-22).** A second Prisma Postgres instance, reached through `TEST_DATABASE_URL`. **73 tests pass** — 49 unit in 175ms, 24 against the database in about 65 seconds.
+
+Two suites, declared as separate Vitest projects rather than separated by convention. `unit` has no setup file, so a unit test cannot quietly start needing a database without moving to a `.db.test.ts` file first. `database` runs with `fileParallelism: false`, since rows are shared state and parallel files would race each other's counts.
+
+Two guards, both confirmed by running them: with `TEST_DATABASE_URL` unset the suite stops with a sentence explaining what to create, and it deliberately does not fall back to `DATABASE_URL`; if the two are the same string it refuses outright, because these tests create, rewrite and delete rows and would happily do that to real threads. Pointing `lib/prisma` at the test database is done by the setup file reassigning `process.env.DATABASE_URL` before any module loads, so no production code learns that testing exists.
+
+Covered now, each one previously a throwaway script: three lanes converging on one thread and turn; two lanes racing the same model getting distinct attempts; a retry reusing and blanking its row while keeping the turn's original prompt; borrowed `clientKey`, `threadKey`, `turnId` and `threadId` all returning nothing rather than someone else's data; the abandoned-row sweep firing on old rows, sparing fresh ones, and never reaching another user's; a clean stream's stored metrics matching what the browser was told; the 2500ms-not-4804ms regression; a mid-flight checkpoint; a truncated read keeping its text; empty-but-clean stored `FAILED`; the watchdog signal; a replaced attempt failing to overwrite, failing to mark failed, and releasing its upstream both when it has produced no visible text and when the upstream has gone completely silent.
+
+One thing the pooled endpoint settled along the way: `prisma migrate deploy` runs against it fine, so no direct connection string was needed. Round trips to it measure 94ms, against 247ms to the app's own database.
+
+**Not covered, knowingly:** `castVote`'s rules. Reaching it means mocking Clerk and Arcjet, and this feature deliberately avoids mocks. The rule worth protecting there — a vote needs two `SUCCESS` answers and an owned, unvoted turn — is a candidate for the same extraction treatment `tallyLeaderboard` got, which would make it testable without a mock in sight. Left for Feature 2, which owns vote lifecycle anyway.
 
 ### Philosophy
 
@@ -726,10 +736,10 @@ Protect important behavior.
 
 - [x] Choose test tooling — Vitest, against a separate Prisma Postgres instance
 - [x] Add unit-test foundation — Vitest, 49 tests, no database or env needed
-- [ ] Add database integration-test setup
-- [ ] Cover authorization/trust boundaries
-- [ ] Cover streaming lifecycle
-- [ ] Cover concurrency regressions
+- [x] Add database integration-test setup — separate Prisma Postgres instance, two guards against ever reaching the app's own
+- [x] Cover authorization/trust boundaries
+- [x] Cover streaming lifecycle
+- [x] Cover concurrency regressions
 - [x] Manual pass list written (`docs/manual-pass.md`), replacing automated E2E — **dropped**, conflicts with the retained browser-automation ban; replaced by a written manual pass list
 - [ ] Run the suite in CI
 
