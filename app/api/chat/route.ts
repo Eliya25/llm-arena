@@ -4,15 +4,13 @@ import { aj } from "@/lib/arcjet";
 import { env } from "@/lib/env";
 import { getFreeModelCatalog } from "@/lib/openrouter";
 import { getPostHogClient } from "@/lib/posthog-server";
-import { claimAnswerRow, type AnswerTarget } from "./answer-row";
+import { claimAnswerRow } from "./answer-row";
+import { readChatRequest } from "./request-shape";
 import {
   markAnswerFailed,
   recordAnswer,
   type AnswerResult,
 } from "./record-answer";
-
-const MAX_MESSAGES = 40;
-const MAX_CONTENT_LENGTH = 32_000;
 
 // The server's own patience, independent of the browser's. Two budgets,
 // because they are two different kinds of silence: a free model can genuinely
@@ -26,29 +24,8 @@ const STALL_MS = 60_000;
 // waiting for a frame describing it.
 const FINAL_FRAME_MS = 5_000;
 
-type ChatMessage = {
-  role: "user" | "assistant";
-  content: string;
-};
-
-type ChatRequestBody = AnswerTarget & {
-  model?: string;
-  messages?: ChatMessage[];
-};
-
 function badRequest(message: string) {
   return Response.json({ error: message }, { status: 400 });
-}
-
-function isValidMessage(value: unknown): value is ChatMessage {
-  if (typeof value !== "object" || value === null) return false;
-  const message = value as Partial<ChatMessage>;
-  return (
-    (message.role === "user" || message.role === "assistant") &&
-    typeof message.content === "string" &&
-    message.content.length > 0 &&
-    message.content.length <= MAX_CONTENT_LENGTH
-  );
 }
 
 // Closes the browser's copy of the stream with what the server actually
@@ -86,41 +63,9 @@ function withFinalFrame(result: Promise<AnswerResult | null>) {
 // status, and metrics from its own copy — the browser supplies which row and
 // nothing else (docs/scope-v2.md Feature 1).
 export async function POST(request: NextRequest) {
-  const body = (await request.json()) as ChatRequestBody;
-  const { model, messages } = body;
-  const target: AnswerTarget = {
-    turnId: body.turnId,
-    clientKey: body.clientKey,
-    threadId: body.threadId,
-    threadKey: body.threadKey,
-  };
-
-  if (!model) return badRequest("model is required");
-  // Either the turn already exists, or the caller brings the keys its sibling
-  // lanes are converging on. Anything else can't name a row.
-  const addressable =
-    typeof target.turnId === "string" ||
-    (typeof target.clientKey === "string" &&
-      (typeof target.threadId === "string" ||
-        typeof target.threadKey === "string"));
-  if (!addressable) {
-    return badRequest("This answer couldn't be started. Please try again.");
-  }
-  if (
-    !Array.isArray(messages) ||
-    messages.length === 0 ||
-    messages.length > MAX_MESSAGES ||
-    !messages.every(isValidMessage)
-  ) {
-    return badRequest(
-      "This conversation couldn't be sent. Try a shorter message.",
-    );
-  }
-  if (messages[messages.length - 1].role !== "user") {
-    return badRequest("messages must end with a user message");
-  }
-
-  const latestPrompt = messages[messages.length - 1].content;
+  const shape = readChatRequest(await request.json());
+  if (!shape.ok) return badRequest(shape.error);
+  const { model, messages, target, prompt: latestPrompt } = shape.request;
 
   // Sending needs an account — decided in docs/scope.md Feature 8 ("only
   // sending a prompt and voting need sign-in"). The UI gates this too, but
