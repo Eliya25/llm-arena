@@ -1,5 +1,5 @@
 import { prisma } from "@/lib/prisma";
-import { track } from "@/lib/analytics";
+import { trackAndWait } from "@/lib/analytics";
 import {
   BLANK_READING,
   absorb,
@@ -270,9 +270,12 @@ export async function recordAnswer(
 
   // Captured either way: the model call really happened and really cost
   // latency, whether or not its answer was still wanted by the time it landed.
-  // Through track(), so a failure here cannot take down a recording that has
-  // already written its answer.
-  track({
+  // Awaited rather than handed to after(): this recorder is itself running
+  // inside after(), where a newly scheduled callback would not be covered by
+  // the platform's waitUntil and could be frozen before it sends. Still cannot
+  // throw — a failure here must not take down a recording that has already
+  // written its answer.
+  await trackAndWait({
     distinctId: details.distinctId,
     event: "$ai_generation",
     properties: {

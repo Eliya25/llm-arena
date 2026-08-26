@@ -557,7 +557,7 @@ Worth stating plainly what this fixes beyond crashes: every prompt used to wait 
 
 **`lib/failure.ts` is the taxonomy**, eleven kinds, each carrying the sentence a person sees, an HTTP status, and whether the same operation could plausibly succeed on a retry. The sentences used to be string literals at each call site, which is why some were good and some described the database back. As a set they are now reviewable, and eighteen tests hold them to it — including one that fails if any message contains the vocabulary of the machine (`prisma`, `arcjet`, `openrouter`, a status code, the word "exception").
 
-**Retry policy: one attempt, and only before a single token exists.** At that point the browser has seen nothing and the row holds nothing, so a second attempt is the same request rather than a duplicate of a partial one. Past the first token there is no retry anywhere. Never on 429 — that is the provider answering clearly, and free models are busy often enough that retrying would turn a failed lane into a slow one. Never on a 4xx, which is our own mistake and will not improve.
+**Retry policy: one attempt, and only before a single token exists.** At that point the browser has seen nothing and the row holds nothing, so a second attempt is the same request rather than a duplicate of a partial one. Past the first token there is no retry anywhere. Never on 429 — that is the provider answering clearly, and free models are busy often enough that retrying would turn a failed lane into a slow one. Never on a 4xx except 408, which is a timeout wearing a client-error status; the rest are our own mistake and will not improve by being repeated.
 
 **109 tests: 71 unit, 38 against the database.**
 
