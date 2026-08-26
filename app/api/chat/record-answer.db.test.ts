@@ -67,6 +67,17 @@ const record = (
 const rowFor = (row: AnswerRow) =>
   prisma.message.findUnique({ where: { id: row.messageId } });
 
+// How far a recorded measurement may sit from what the stream itself timed.
+// Wide enough to survive a loaded machine, far narrower than any of the
+// mistakes these tests exist to catch — the metric regression they were
+// written for was off by more than two seconds.
+const TIMING_TOLERANCE_MS = 400;
+
+const measured = (recorded: number | null | undefined, actual: number) => {
+  expect(recorded).not.toBeNull();
+  expect(Math.abs((recorded ?? 0) - actual)).toBeLessThan(TIMING_TOLERANCE_MS);
+};
+
 afterAll(async () => {
   const turns = await prisma.turn.findMany({
     where: { thread: { user: { clerkId: { in: users } } } },
@@ -87,13 +98,22 @@ afterAll(async () => {
 describe("a stream that finishes cleanly", () => {
   it("stores the answer and the measurements it actually took", async () => {
     const row = await claim();
+    // The stream reports its own timings, and the recorder is checked against
+    // those rather than against the sleeps that produced them. A busy machine
+    // stretches a sleep and would wobble a fixed bound; it stretches both of
+    // these equally, so what is being asserted stays "the recorder measured
+    // this stream" instead of "this machine was not busy".
+    const sent = { start: 0, firstToken: 0, lastToken: 0 };
     const result = await record(
       row,
       new ReadableStream({
         async start(controller) {
+          sent.start = performance.now();
           await sleep(500);
+          sent.firstToken = performance.now();
           controller.enqueue(delta("Hello"));
           await sleep(1000);
+          sent.lastToken = performance.now();
           controller.enqueue(delta(" world"));
           controller.enqueue(usage(40));
           controller.enqueue(done());
@@ -103,12 +123,8 @@ describe("a stream that finishes cleanly", () => {
     );
 
     expect(result?.status).toBe("SUCCESS");
-    // Generous windows: this is a real clock over a real network, and the
-    // point is that the numbers describe the stream rather than being exact.
-    expect(result?.timeToFirstTokenMs).toBeGreaterThanOrEqual(450);
-    expect(result?.timeToFirstTokenMs).toBeLessThan(1200);
-    expect(result?.generationDurationMs).toBeGreaterThanOrEqual(950);
-    expect(result?.generationDurationMs).toBeLessThan(1800);
+    measured(result?.timeToFirstTokenMs, sent.firstToken - sent.start);
+    measured(result?.generationDurationMs, sent.lastToken - sent.firstToken);
 
     const stored = await rowFor(row);
     expect(stored).toMatchObject({ content: "Hello world", status: "SUCCESS" });
@@ -125,12 +141,16 @@ describe("a stream that finishes cleanly", () => {
     // when the loop got round to the chunk, rather than when it arrived, once
     // recorded a 2500ms generation as 4804ms.
     const row = await claim();
+    const sent = { firstToken: 0, lastToken: 0 };
     const result = await record(
       row,
       new ReadableStream({
         async start(controller) {
+          sent.firstToken = performance.now();
           controller.enqueue(delta("first"));
+          // Long enough that a checkpoint falls due inside the gap.
           await sleep(2500);
+          sent.lastToken = performance.now();
           controller.enqueue(delta(" last"));
           controller.enqueue(usage(10));
           controller.enqueue(done());
@@ -139,8 +159,11 @@ describe("a stream that finishes cleanly", () => {
       }),
     );
 
-    expect(result?.generationDurationMs).toBeGreaterThanOrEqual(2400);
-    expect(result?.generationDurationMs).toBeLessThan(3200);
+    const actual = sent.lastToken - sent.firstToken;
+    measured(result?.generationDurationMs, actual);
+    // The bug this exists for inflated a 2500ms span to 4804ms. Stated as a
+    // ratio so it keeps its meaning however slow the machine is.
+    expect(result?.generationDurationMs ?? 0).toBeLessThan(actual * 1.4);
   });
 
   it("saves progress midway rather than holding everything to the end", async () => {

@@ -1,5 +1,5 @@
 import { prisma } from "@/lib/prisma";
-import { getPostHogClient } from "@/lib/posthog-server";
+import { trackAndWait } from "@/lib/analytics";
 import {
   BLANK_READING,
   absorb,
@@ -270,23 +270,24 @@ export async function recordAnswer(
 
   // Captured either way: the model call really happened and really cost
   // latency, whether or not its answer was still wanted by the time it landed.
-  const posthog = getPostHogClient();
-  if (posthog) {
-    posthog.capture({
-      distinctId: details.distinctId,
-      event: "$ai_generation",
-      properties: {
-        $ai_provider: "openrouter",
-        $ai_model: details.model,
-        $ai_input_tokens: reading.inputTokens,
-        $ai_output_tokens: reading.outputTokens,
-        $ai_latency: (performance.now() - details.upstreamAt) / 1000,
-        // Every model in this app is free tier — $0 is the real, honest cost.
-        $ai_total_cost_usd: 0,
-      },
-    });
-    await posthog.flush();
-  }
+  // Awaited rather than handed to after(): this recorder is itself running
+  // inside after(), where a newly scheduled callback would not be covered by
+  // the platform's waitUntil and could be frozen before it sends. Still cannot
+  // throw — a failure here must not take down a recording that has already
+  // written its answer.
+  await trackAndWait({
+    distinctId: details.distinctId,
+    event: "$ai_generation",
+    properties: {
+      $ai_provider: "openrouter",
+      $ai_model: details.model,
+      $ai_input_tokens: reading.inputTokens,
+      $ai_output_tokens: reading.outputTokens,
+      $ai_latency: (performance.now() - details.upstreamAt) / 1000,
+      // Every model in this app is free tier — $0 is the real, honest cost.
+      $ai_total_cost_usd: 0,
+    },
+  });
 
   // Null means nothing was stored, so there is nothing authoritative to tell
   // the browser — the route simply omits its closing frame.

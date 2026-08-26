@@ -59,15 +59,26 @@ The existing product behavior should remain intact while V2 hardens the implemen
 | #   | Feature                                       | Phase               | Priority | Status      |
 | --- | --------------------------------------------- | ------------------- | -------- | ----------- |
 | 1   | Server-authoritative generation & metrics     | Trust & Correctness | P0       | complete    |
-| 2   | Idempotent persistence & lifecycle invariants | Trust & Correctness | P0       | not started |
-| 3   | Reliability & failure policy                  | Reliability         | P0       | not started |
+| 2   | Idempotent persistence & lifecycle invariants | Trust & Correctness | P0       | complete    |
+| 3   | Reliability & failure policy                  | Reliability         | P0       | complete    |
 | 4   | Production observability & traceability       | Operations          | P1       | not started |
-| 5   | Automated test suite                          | Verification        | P1       | not started |
+| 5   | Automated test suite                          | Verification        | P1       | complete    |
 | 6   | Sharing lifecycle & data ownership            | Security / Product  | P1       | not started |
 | 7   | Database & leaderboard scalability            | Performance         | P1       | not started |
 | 8   | Load, concurrency & capacity verification     | Performance         | P1       | not started |
 | 9   | CI/CD, migrations & deployment safety         | Delivery            | P1       | not started |
 | 10  | Architecture documentation & production story | Resume / Operations | P2       | not started |
+
+**Agreed order (2026-08-22).** Not the numbering. Trust and correctness first, then the ability to see and survive failure, then scale, then delivery:
+
+`2` → `3` → `4` → `7` → `9`
+
+Features **6** (sharing lifecycle), **8** (load and capacity) and **10** (architecture write-up) come after those, and 10 is best written last regardless, since it documents whatever the others ended up deciding.
+
+Two features have already been overtaken by work done elsewhere, which is recorded here rather than left for someone to rediscover:
+
+- **Feature 2** lost most of its scope to Feature 1. `attempt` numbering, stale-result protection, unique constraints and duplicate-request handling were all built there as fixes to real defects, and its regression cases were built in Feature 5. What remains is transition enforcement and the vote rules.
+- **Feature 5** is done, and it moved the ban in `CLAUDE.md` from "no test runner" to "nothing that automates a browser" along the way.
 
 ---
 
@@ -353,6 +364,27 @@ SUCCESS -> FAILED     forbidden
 
 A retry should be distinguishable from the original attempt.
 
+### Plan (2026-08-22) — and a correction to the state machine above
+
+**The machine as written is wrong, and building it would break retry.** The table above says `SUCCESS -> PENDING` is forbidden. That is exactly what a retry does: `claimAnswerRow` blanks the row to `PENDING` and increments `attempt` in one statement. Enforcing "SUCCESS is terminal" at face value would make every retry fail.
+
+The rule that is actually true is scoped to an attempt:
+
+```text
+within one attempt          PENDING -> STREAMING -> SUCCESS | FAILED
+                            and a terminal state is terminal
+
+changing attempt            the only thing allowed to reset a row to PENDING
+```
+
+So the invariant is not "SUCCESS never becomes PENDING" but **"nothing may move backwards without taking ownership of a new attempt"**. That is a materially different rule, and it is the one worth enforcing.
+
+**What remains of this feature.** Most of it was built as defect fixes during Feature 1 (`attempt`, stale-result protection, unique constraints, duplicate-request handling) and its regression cases were built in Feature 5. Two things are genuinely open:
+
+**A. Transition enforcement.** Today every write happens to be legal because the four call sites happen to be written correctly, and Feature 5 proves they behave. Nothing _prevents_ a fifth call site from writing `SUCCESS` over a `FAILED` row, or a `STREAMING` checkpoint landing on a row that already succeeded. The rule lives in people's heads and in test coverage, not in the system.
+
+**B. The vote rules.** `castVote` decides whether a vote is allowed — the turn is the caller's, unvoted, the chosen answer succeeded, and at least two answers succeeded. Feature 5 could not cover it without mocking Clerk and Arcjet, and deliberately did not. The rule extracts into a pure function the same way `tallyLeaderboard` did, and then it is testable with no mock in sight. `@@unique` on `Vote.turnId` already makes a double vote impossible at the database level; that part needs a test, not a change.
+
 ### Topics to evaluate
 
 - attempt number
@@ -364,6 +396,22 @@ A retry should be distinguishable from the original attempt.
 - duplicate request handling
 
 Do not introduce all of them automatically. Use only the mechanisms required by the final lifecycle design.
+
+### Built (2026-08-26)
+
+**The rule is now the database's, not the code's.** A `BEFORE UPDATE` trigger on `Message` enforces the attempt-scoped machine: within one attempt `PENDING → STREAMING → SUCCESS | FAILED`, terminal is terminal, and only a change of `attempt` may reset a row — to `PENDING` and nothing else. A trigger rather than conditions in the application, because the whole gap being closed is a _future_ writer forgetting: a new code path, a one-off script, Prisma Studio, someone at a psql prompt. Conditions in the code bind only code that remembers them.
+
+The first thing it proved was about the existing code rather than future code: adding the trigger and re-running the suite passed all 24 database tests untouched, which is the evidence that none of the four live write paths was relying on an illegal transition. Feature 5 paying for itself within the hour.
+
+Twelve tests cover the trigger directly, and they write through Prisma with no application guard in front, since the point is that the rule holds for a writer that never read our code. Including the one the scope had backwards: a new attempt resetting a `SUCCESS` row to `PENDING` is _allowed_, and every retry depends on it.
+
+**The vote rules are a pure function.** `judgeVote` in `app/arena/vote-rules.ts`, extracted the same way `tallyLeaderboard` was, with twelve tests and no mock anywhere. Ownership deliberately stays out of it — that is settled by the query that loads the turn, scoped to the caller, and a rule object should not be trusted to remember it. Two more tests cover the guarantee underneath: even when two votes pass the rule at the same instant, `@@unique` on `Vote.turnId` lets exactly one exist, and the second comes back `P2002`.
+
+**A flake, and what it turned out to be.** Running the full suite three times in a row failed the second and third runs almost entirely — 26 then 38 tests — with empty Prisma errors that named no cause. The database was healthy and nearly empty. The cause was connection exhaustion: every Vitest worker builds its own pool through `lib/prisma`, nothing ever closed them, and the instance allows few enough connections that a few runs in a row exhaust them. Fixed by running workers serially and disconnecting the pool when a file finishes. Three consecutive full runs now pass at 98/98.
+
+Separately, two timing assertions were genuinely fragile — they compared measured metrics against the `sleep` durations that produced them, which a loaded machine stretches. They now compare against timings the stream reports about itself, so contention moves both sides equally, with the tolerance named and the regression they exist for restated as a ratio.
+
+**98 tests: 60 unit, 38 against the database.**
 
 ### Verification
 
@@ -378,12 +426,12 @@ Create regression cases for:
 
 The final persisted state must always represent the winning/latest valid operation.
 
-- [ ] Define generation state machine
-- [ ] Define retry semantics
-- [ ] Prevent stale writes
-- [ ] Prevent duplicate logical operations
-- [ ] Add persistence invariant tests
-- [ ] Document concurrency decisions
+- [x] Define generation state machine — scoped to an attempt, which corrected the version above
+- [x] Define retry semantics — built in Feature 1 as a defect fix
+- [x] Prevent stale writes — attempt-conditioned writes, Feature 1
+- [x] Prevent duplicate logical operations — unique keys, Feature 1
+- [x] Add persistence invariant tests
+- [x] Document concurrency decisions
 
 ---
 
@@ -409,6 +457,32 @@ Dependencies include:
 - Clerk
 - PostHog
 - OpenRouter model catalog
+
+### What is actually there today (read before building — 2026-08-26)
+
+Surveyed rather than assumed. Three findings, and the first two are live defects against this feature's own stated invariants.
+
+**1. Analytics can kill a generation, and slows every one of them.** `app/api/chat/route.ts` calls `await posthog.flush()` on the success path, immediately before the stream is handed to the browser, and it is not inside a `try`. PostHog throwing means a perfectly good generation returns a 500. PostHog being _slow_ is worse in a quieter way: every prompt waits for an analytics round trip before its first token can move. The scope's own line — "PostHog failure must not destroy an otherwise valid generation" — is violated today, on the hot path.
+
+**2. Nothing wraps `auth()` or `aj.protect()` either.** A Clerk or Arcjet blip is an unhandled throw, which is both a 500 and a raw error reaching a user, against `CLAUDE.md`'s rule that a person never sees an exception. Arcjet's own semantics are the harder half: a security check that cannot reach its service has to _decide_ whether to allow or deny, and right now it does neither deliberately — it crashes. That decision needs making per surface, not once globally: failing open on the model call and failing open on the public read are different risks.
+
+**3. A catalog outage reads as "that model doesn't exist".** `getFreeModelCatalog()` returns `[]` on any failure, and the route treats an empty catalog as "the model you named is not allowed", answering _"That model isn't available here. Pick one from the model list."_ — while the list is empty, because the same outage emptied it. Failing closed is right; saying that is wrong. Worth noting the cache hides this most of the time: a one-hour `revalidate` means only a cold cache during an outage reaches it, which is exactly the kind of failure that shows up once in production and confuses everyone.
+
+**What is already sound**, and should be recorded so it is not "fixed" later: partial failure is genuinely first-class — one lane failing never touches the others, and a turn with one dead lane is still votable. Database failures return plain sentences. Upstream 429 is already distinguished from silence, with copy that tells the user to wait or switch models rather than to debug their prompt. The stall watchdogs are bounded and now tested.
+
+### Plan
+
+**A. An error taxonomy that exists in code, not in a table.** A small module classifying a failure into the categories this feature lists, returning both the category and the plain sentence a person should see. Today those sentences are string literals scattered across call sites, which is why some are good and some are not.
+
+**B. Non-critical dependencies made non-critical.** Analytics moves off the request path entirely — captured without awaiting a flush, with its own failures swallowed and logged. Nothing about a generation should wait on, or be endangered by, an event.
+
+**C. Security dependencies get a decided answer.** `auth()` and `aj.protect()` wrapped, with the fail-open/fail-closed choice made explicitly per surface and written down next to the code, rather than being whatever an unhandled throw happens to do.
+
+**D. The catalog says what actually went wrong.** Still fails closed, but an unreachable catalog and an unknown model stop sharing a sentence.
+
+**E. Retry policy, bounded and written down.** Covered by the question below.
+
+**F. Verified by the suite**, not by argument: each dependency made to fail on purpose, checking that a lane still answers, that the turn is still votable, and that nothing reaches a person as an exception.
 
 ### Error classification
 
@@ -466,6 +540,33 @@ Non-critical analytics should remain non-critical.
 
 Security failures must retain their intentionally chosen fail-open/fail-closed semantics.
 
+### Built (2026-08-26)
+
+**The two live defects are closed.**
+
+`await posthog.flush()` is gone from the request path. `lib/analytics.ts` exports `track()`, which captures and hands the flush to `after()` — off the critical path, but still kept alive by the platform, which matters because a fire-and-forget flush from a short-lived route handler is often simply dropped. It cannot throw: a failure is logged and swallowed, and it returns nothing worth checking, because a caller that had to handle an analytics failure would be a caller whose real work depends on analytics. Every capture in the codebase now goes through it, including `$ai_generation` inside the recorder.
+
+Worth stating plainly what this fixes beyond crashes: every prompt used to wait for an analytics round trip before its first token could move.
+
+`auth()` and `aj.protect()` are wrapped, and each has a decided posture rather than whatever an unhandled throw produced:
+
+- **Clerk fails closed.** If we cannot tell who is asking, we refuse — a thread has to belong to someone.
+- **Arcjet fails open**, logged at error level. It is abuse mitigation here, not authorization: the caller is already signed in, the model allowlist still holds, and every model is free, so an unprotected minute is bounded, while failing closed would turn a vendor outage into a total outage of the product's one feature. The accepted risk is named in the code — during such a minute the rate limit, the injection check and the card-number check are all absent.
+
+**A catalog outage no longer poses as an unknown model.** Still fails closed, but `catalog_unavailable` and `model_not_allowed` are separate kinds with separate sentences, because telling someone to pick from a list an outage just emptied is a maze with no exit.
+
+**`lib/failure.ts` is the taxonomy**, eleven kinds, each carrying the sentence a person sees, an HTTP status, and whether the same operation could plausibly succeed on a retry. The sentences used to be string literals at each call site, which is why some were good and some described the database back. As a set they are now reviewable, and eighteen tests hold them to it — including one that fails if any message contains the vocabulary of the machine (`prisma`, `arcjet`, `openrouter`, a status code, the word "exception").
+
+**Retry policy: one attempt, and only before a single token exists.** At that point the browser has seen nothing and the row holds nothing, so a second attempt is the same request rather than a duplicate of a partial one. Past the first token there is no retry anywhere. Never on 429 — that is the provider answering clearly, and free models are busy often enough that retrying would turn a failed lane into a slow one. Never on a 4xx except 408, which is a timeout wearing a client-error status; the rest are our own mistake and will not improve by being repeated.
+
+**109 tests: 71 unit, 38 against the database.**
+
+### Honesty about what is verified
+
+The taxonomy, the classification of upstream statuses and the retry rule are covered by tests. The dependency isolation is not simulated end to end: making Clerk, Arcjet or PostHog actually fail in a test means mocking them, and this project deliberately avoids mocks. What stands behind those changes is the code review plus the manual pass, and the fact that each failure now has one obvious place to look.
+
+The one gap worth naming rather than glossing: nothing automatically proves that an Arcjet outage results in an allowed request. That behaviour is a `.catch()` returning `null` and a `decision?.isDenied()`, which is about as legible as it gets, but "legible" is not "verified".
+
 ### Verification
 
 - simulate upstream 429
@@ -484,17 +585,17 @@ Security failures must retain their intentionally chosen fail-open/fail-closed s
 
 - verify retry counts remain bounded
 
-- [ ] Define error taxonomy
+- [x] Define error taxonomy — `lib/failure.ts`
 
-- [ ] Define retryable vs non-retryable errors
+- [x] Define retryable vs non-retryable errors
 
-- [ ] Implement bounded retry policy where justified
+- [x] Implement bounded retry policy where justified — one attempt, before the first token only
 
-- [ ] Isolate non-critical dependencies
+- [x] Isolate non-critical dependencies — analytics off the request path
 
-- [ ] Verify partial failures
+- [x] Verify partial failures — see the honesty note below
 
-- [ ] Document failure semantics
+- [x] Document failure semantics
 
 ---
 
