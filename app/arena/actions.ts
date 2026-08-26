@@ -4,7 +4,7 @@ import { auth } from "@clerk/nextjs/server";
 import { request as arcjetRequest } from "@arcjet/next";
 import { ajActions } from "@/lib/arcjet";
 import { prisma } from "@/lib/prisma";
-import { getPostHogClient } from "@/lib/posthog-server";
+import { track } from "@/lib/analytics";
 import { judgeVote } from "./vote-rules";
 
 const SIGN_IN_ERROR = "Please sign in to do that.";
@@ -117,19 +117,15 @@ export async function castVote(input: {
       data: { turnId: turn.id, messageId: winner.id },
     });
 
-    const posthog = getPostHogClient();
-    if (posthog) {
-      posthog.capture({
-        distinctId: user.clerkId,
-        event: "vote_cast",
-        properties: {
-          turn_id: turn.id,
-          winner_model: winner.model,
-          answered_models: answered,
-        },
-      });
-      await posthog.flush();
-    }
+    track({
+      distinctId: user.clerkId,
+      event: "vote_cast",
+      properties: {
+        turn_id: turn.id,
+        winner_model: winner.model,
+        answered_models: answered,
+      },
+    });
 
     return { ok: true };
   } catch (cause) {
