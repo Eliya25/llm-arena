@@ -106,7 +106,11 @@ async function callUpstream(
     model,
     status: first?.status ?? "threw",
   });
-  // The body of a failed response is never read, so dropping it is safe.
+  // Release the failed response before asking again. An unconsumed body keeps
+  // its connection pinned until garbage collection, and a provider outage is
+  // exactly when that matters: three lanes per prompt, every one of them
+  // retrying, all holding a connection each for a response nobody will read.
+  await first?.body?.cancel().catch(() => {});
   return (await attempt()) ?? first;
 }
 
@@ -286,21 +290,34 @@ export async function POST(request: NextRequest) {
     clearTimeout(stallTimer);
     const status = upstream?.status ?? 502;
     const detail = upstream ? await upstream.text().catch(() => "") : "";
-    console.error("OpenRouter request failed", { model, status, detail });
+
+    // Our own watchdog giving up is not the provider returning 502, and
+    // recording it as one makes a silent model indistinguishable from a broken
+    // one in the logs — which is precisely the distinction anyone debugging
+    // this would want.
+    //
+    // A 429 is not silence either: the model answered, and the answer was
+    // "I'm full". classifyUpstream keeps that distinction, and the wording
+    // that goes with it, in one place.
+    const failed = upstreamAbort.signal.aborted
+      ? failure("upstream_timeout")
+      : classifyUpstream(status);
+
+    console.error("OpenRouter request failed", {
+      model,
+      kind: failed.kind,
+      status,
+      detail,
+    });
 
     track({
       distinctId,
       event: "model_response_failed",
-      properties: { model, status_code: status },
+      properties: { model, status_code: status, failure: failed.kind },
     });
 
     // The browser can't write this outcome, so the route records it.
     await markAnswerFailed(row.messageId, row.attempt);
-
-    // A 429 is not silence — the model answered, and the answer was "I'm
-    // full". classifyUpstream keeps that distinction, and the wording that
-    // goes with it, in one place.
-    const failed = classifyUpstream(status);
     return Response.json(
       { error: failed.message },
       { status: failed.status, headers: answerHeaders },

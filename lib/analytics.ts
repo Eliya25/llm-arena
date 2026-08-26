@@ -36,12 +36,42 @@ function flushLater(flush: () => Promise<unknown>) {
 // Never throws, and never returns anything worth checking. A caller that had
 // to handle an analytics failure would be a caller whose real work depends on
 // analytics, which is the thing being prevented.
+//
+// For work that is *already* running after the response — a recorder handed to
+// after() — use trackAndWait instead. See the note on it.
 export function track({ distinctId, event, properties }: AnalyticsEvent): void {
   try {
     const posthog = getPostHogClient();
     if (!posthog) return;
     posthog.capture({ distinctId, event, properties });
     flushLater(() => posthog.flush());
+  } catch (cause) {
+    console.error("Capturing an analytics event failed", { event, cause });
+  }
+}
+
+// The same event, flushed inline rather than handed to after().
+//
+// For a caller that is itself running inside after(), scheduling another
+// after() callback is not equivalent: only the first callback registered gets
+// the platform's waitUntil, and by this point the route's own events have
+// already claimed it. A late callback lands on a queue nothing is waiting for,
+// and on a serverless host the instance can freeze before the event leaves.
+// Awaiting here keeps the flush inside the work that waitUntil is already
+// holding open.
+//
+// Like track(), it cannot throw and reports nothing back — the awaiting is for
+// the platform's benefit, not the caller's.
+export async function trackAndWait({
+  distinctId,
+  event,
+  properties,
+}: AnalyticsEvent): Promise<void> {
+  try {
+    const posthog = getPostHogClient();
+    if (!posthog) return;
+    posthog.capture({ distinctId, event, properties });
+    await posthog.flush();
   } catch (cause) {
     console.error("Capturing an analytics event failed", { event, cause });
   }
