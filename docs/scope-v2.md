@@ -59,15 +59,26 @@ The existing product behavior should remain intact while V2 hardens the implemen
 | #   | Feature                                       | Phase               | Priority | Status      |
 | --- | --------------------------------------------- | ------------------- | -------- | ----------- |
 | 1   | Server-authoritative generation & metrics     | Trust & Correctness | P0       | complete    |
-| 2   | Idempotent persistence & lifecycle invariants | Trust & Correctness | P0       | not started |
+| 2   | Idempotent persistence & lifecycle invariants | Trust & Correctness | P0       | complete    |
 | 3   | Reliability & failure policy                  | Reliability         | P0       | not started |
 | 4   | Production observability & traceability       | Operations          | P1       | not started |
-| 5   | Automated test suite                          | Verification        | P1       | not started |
+| 5   | Automated test suite                          | Verification        | P1       | complete    |
 | 6   | Sharing lifecycle & data ownership            | Security / Product  | P1       | not started |
 | 7   | Database & leaderboard scalability            | Performance         | P1       | not started |
 | 8   | Load, concurrency & capacity verification     | Performance         | P1       | not started |
 | 9   | CI/CD, migrations & deployment safety         | Delivery            | P1       | not started |
 | 10  | Architecture documentation & production story | Resume / Operations | P2       | not started |
+
+**Agreed order (2026-08-22).** Not the numbering. Trust and correctness first, then the ability to see and survive failure, then scale, then delivery:
+
+`2` → `3` → `4` → `7` → `9`
+
+Features **6** (sharing lifecycle), **8** (load and capacity) and **10** (architecture write-up) come after those, and 10 is best written last regardless, since it documents whatever the others ended up deciding.
+
+Two features have already been overtaken by work done elsewhere, which is recorded here rather than left for someone to rediscover:
+
+- **Feature 2** lost most of its scope to Feature 1. `attempt` numbering, stale-result protection, unique constraints and duplicate-request handling were all built there as fixes to real defects, and its regression cases were built in Feature 5. What remains is transition enforcement and the vote rules.
+- **Feature 5** is done, and it moved the ban in `CLAUDE.md` from "no test runner" to "nothing that automates a browser" along the way.
 
 ---
 
@@ -353,6 +364,27 @@ SUCCESS -> FAILED     forbidden
 
 A retry should be distinguishable from the original attempt.
 
+### Plan (2026-08-22) — and a correction to the state machine above
+
+**The machine as written is wrong, and building it would break retry.** The table above says `SUCCESS -> PENDING` is forbidden. That is exactly what a retry does: `claimAnswerRow` blanks the row to `PENDING` and increments `attempt` in one statement. Enforcing "SUCCESS is terminal" at face value would make every retry fail.
+
+The rule that is actually true is scoped to an attempt:
+
+```text
+within one attempt          PENDING -> STREAMING -> SUCCESS | FAILED
+                            and a terminal state is terminal
+
+changing attempt            the only thing allowed to reset a row to PENDING
+```
+
+So the invariant is not "SUCCESS never becomes PENDING" but **"nothing may move backwards without taking ownership of a new attempt"**. That is a materially different rule, and it is the one worth enforcing.
+
+**What remains of this feature.** Most of it was built as defect fixes during Feature 1 (`attempt`, stale-result protection, unique constraints, duplicate-request handling) and its regression cases were built in Feature 5. Two things are genuinely open:
+
+**A. Transition enforcement.** Today every write happens to be legal because the four call sites happen to be written correctly, and Feature 5 proves they behave. Nothing _prevents_ a fifth call site from writing `SUCCESS` over a `FAILED` row, or a `STREAMING` checkpoint landing on a row that already succeeded. The rule lives in people's heads and in test coverage, not in the system.
+
+**B. The vote rules.** `castVote` decides whether a vote is allowed — the turn is the caller's, unvoted, the chosen answer succeeded, and at least two answers succeeded. Feature 5 could not cover it without mocking Clerk and Arcjet, and deliberately did not. The rule extracts into a pure function the same way `tallyLeaderboard` did, and then it is testable with no mock in sight. `@@unique` on `Vote.turnId` already makes a double vote impossible at the database level; that part needs a test, not a change.
+
 ### Topics to evaluate
 
 - attempt number
@@ -364,6 +396,22 @@ A retry should be distinguishable from the original attempt.
 - duplicate request handling
 
 Do not introduce all of them automatically. Use only the mechanisms required by the final lifecycle design.
+
+### Built (2026-08-26)
+
+**The rule is now the database's, not the code's.** A `BEFORE UPDATE` trigger on `Message` enforces the attempt-scoped machine: within one attempt `PENDING → STREAMING → SUCCESS | FAILED`, terminal is terminal, and only a change of `attempt` may reset a row — to `PENDING` and nothing else. A trigger rather than conditions in the application, because the whole gap being closed is a _future_ writer forgetting: a new code path, a one-off script, Prisma Studio, someone at a psql prompt. Conditions in the code bind only code that remembers them.
+
+The first thing it proved was about the existing code rather than future code: adding the trigger and re-running the suite passed all 24 database tests untouched, which is the evidence that none of the four live write paths was relying on an illegal transition. Feature 5 paying for itself within the hour.
+
+Twelve tests cover the trigger directly, and they write through Prisma with no application guard in front, since the point is that the rule holds for a writer that never read our code. Including the one the scope had backwards: a new attempt resetting a `SUCCESS` row to `PENDING` is _allowed_, and every retry depends on it.
+
+**The vote rules are a pure function.** `judgeVote` in `app/arena/vote-rules.ts`, extracted the same way `tallyLeaderboard` was, with twelve tests and no mock anywhere. Ownership deliberately stays out of it — that is settled by the query that loads the turn, scoped to the caller, and a rule object should not be trusted to remember it. Two more tests cover the guarantee underneath: even when two votes pass the rule at the same instant, `@@unique` on `Vote.turnId` lets exactly one exist, and the second comes back `P2002`.
+
+**A flake, and what it turned out to be.** Running the full suite three times in a row failed the second and third runs almost entirely — 26 then 38 tests — with empty Prisma errors that named no cause. The database was healthy and nearly empty. The cause was connection exhaustion: every Vitest worker builds its own pool through `lib/prisma`, nothing ever closed them, and the instance allows few enough connections that a few runs in a row exhaust them. Fixed by running workers serially and disconnecting the pool when a file finishes. Three consecutive full runs now pass at 98/98.
+
+Separately, two timing assertions were genuinely fragile — they compared measured metrics against the `sleep` durations that produced them, which a loaded machine stretches. They now compare against timings the stream reports about itself, so contention moves both sides equally, with the tolerance named and the regression they exist for restated as a ratio.
+
+**98 tests: 60 unit, 38 against the database.**
 
 ### Verification
 
@@ -378,12 +426,12 @@ Create regression cases for:
 
 The final persisted state must always represent the winning/latest valid operation.
 
-- [ ] Define generation state machine
-- [ ] Define retry semantics
-- [ ] Prevent stale writes
-- [ ] Prevent duplicate logical operations
-- [ ] Add persistence invariant tests
-- [ ] Document concurrency decisions
+- [x] Define generation state machine — scoped to an attempt, which corrected the version above
+- [x] Define retry semantics — built in Feature 1 as a defect fix
+- [x] Prevent stale writes — attempt-conditioned writes, Feature 1
+- [x] Prevent duplicate logical operations — unique keys, Feature 1
+- [x] Add persistence invariant tests
+- [x] Document concurrency decisions
 
 ---
 
