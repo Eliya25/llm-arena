@@ -60,7 +60,7 @@ The existing product behavior should remain intact while V2 hardens the implemen
 | --- | --------------------------------------------- | ------------------- | -------- | ----------- |
 | 1   | Server-authoritative generation & metrics     | Trust & Correctness | P0       | complete    |
 | 2   | Idempotent persistence & lifecycle invariants | Trust & Correctness | P0       | complete    |
-| 3   | Reliability & failure policy                  | Reliability         | P0       | not started |
+| 3   | Reliability & failure policy                  | Reliability         | P0       | complete    |
 | 4   | Production observability & traceability       | Operations          | P1       | not started |
 | 5   | Automated test suite                          | Verification        | P1       | complete    |
 | 6   | Sharing lifecycle & data ownership            | Security / Product  | P1       | not started |
@@ -458,6 +458,32 @@ Dependencies include:
 - PostHog
 - OpenRouter model catalog
 
+### What is actually there today (read before building — 2026-08-26)
+
+Surveyed rather than assumed. Three findings, and the first two are live defects against this feature's own stated invariants.
+
+**1. Analytics can kill a generation, and slows every one of them.** `app/api/chat/route.ts` calls `await posthog.flush()` on the success path, immediately before the stream is handed to the browser, and it is not inside a `try`. PostHog throwing means a perfectly good generation returns a 500. PostHog being _slow_ is worse in a quieter way: every prompt waits for an analytics round trip before its first token can move. The scope's own line — "PostHog failure must not destroy an otherwise valid generation" — is violated today, on the hot path.
+
+**2. Nothing wraps `auth()` or `aj.protect()` either.** A Clerk or Arcjet blip is an unhandled throw, which is both a 500 and a raw error reaching a user, against `CLAUDE.md`'s rule that a person never sees an exception. Arcjet's own semantics are the harder half: a security check that cannot reach its service has to _decide_ whether to allow or deny, and right now it does neither deliberately — it crashes. That decision needs making per surface, not once globally: failing open on the model call and failing open on the public read are different risks.
+
+**3. A catalog outage reads as "that model doesn't exist".** `getFreeModelCatalog()` returns `[]` on any failure, and the route treats an empty catalog as "the model you named is not allowed", answering _"That model isn't available here. Pick one from the model list."_ — while the list is empty, because the same outage emptied it. Failing closed is right; saying that is wrong. Worth noting the cache hides this most of the time: a one-hour `revalidate` means only a cold cache during an outage reaches it, which is exactly the kind of failure that shows up once in production and confuses everyone.
+
+**What is already sound**, and should be recorded so it is not "fixed" later: partial failure is genuinely first-class — one lane failing never touches the others, and a turn with one dead lane is still votable. Database failures return plain sentences. Upstream 429 is already distinguished from silence, with copy that tells the user to wait or switch models rather than to debug their prompt. The stall watchdogs are bounded and now tested.
+
+### Plan
+
+**A. An error taxonomy that exists in code, not in a table.** A small module classifying a failure into the categories this feature lists, returning both the category and the plain sentence a person should see. Today those sentences are string literals scattered across call sites, which is why some are good and some are not.
+
+**B. Non-critical dependencies made non-critical.** Analytics moves off the request path entirely — captured without awaiting a flush, with its own failures swallowed and logged. Nothing about a generation should wait on, or be endangered by, an event.
+
+**C. Security dependencies get a decided answer.** `auth()` and `aj.protect()` wrapped, with the fail-open/fail-closed choice made explicitly per surface and written down next to the code, rather than being whatever an unhandled throw happens to do.
+
+**D. The catalog says what actually went wrong.** Still fails closed, but an unreachable catalog and an unknown model stop sharing a sentence.
+
+**E. Retry policy, bounded and written down.** Covered by the question below.
+
+**F. Verified by the suite**, not by argument: each dependency made to fail on purpose, checking that a lane still answers, that the turn is still votable, and that nothing reaches a person as an exception.
+
 ### Error classification
 
 Separate errors into categories such as:
@@ -514,6 +540,33 @@ Non-critical analytics should remain non-critical.
 
 Security failures must retain their intentionally chosen fail-open/fail-closed semantics.
 
+### Built (2026-08-26)
+
+**The two live defects are closed.**
+
+`await posthog.flush()` is gone from the request path. `lib/analytics.ts` exports `track()`, which captures and hands the flush to `after()` — off the critical path, but still kept alive by the platform, which matters because a fire-and-forget flush from a short-lived route handler is often simply dropped. It cannot throw: a failure is logged and swallowed, and it returns nothing worth checking, because a caller that had to handle an analytics failure would be a caller whose real work depends on analytics. Every capture in the codebase now goes through it, including `$ai_generation` inside the recorder.
+
+Worth stating plainly what this fixes beyond crashes: every prompt used to wait for an analytics round trip before its first token could move.
+
+`auth()` and `aj.protect()` are wrapped, and each has a decided posture rather than whatever an unhandled throw produced:
+
+- **Clerk fails closed.** If we cannot tell who is asking, we refuse — a thread has to belong to someone.
+- **Arcjet fails open**, logged at error level. It is abuse mitigation here, not authorization: the caller is already signed in, the model allowlist still holds, and every model is free, so an unprotected minute is bounded, while failing closed would turn a vendor outage into a total outage of the product's one feature. The accepted risk is named in the code — during such a minute the rate limit, the injection check and the card-number check are all absent.
+
+**A catalog outage no longer poses as an unknown model.** Still fails closed, but `catalog_unavailable` and `model_not_allowed` are separate kinds with separate sentences, because telling someone to pick from a list an outage just emptied is a maze with no exit.
+
+**`lib/failure.ts` is the taxonomy**, eleven kinds, each carrying the sentence a person sees, an HTTP status, and whether the same operation could plausibly succeed on a retry. The sentences used to be string literals at each call site, which is why some were good and some described the database back. As a set they are now reviewable, and eighteen tests hold them to it — including one that fails if any message contains the vocabulary of the machine (`prisma`, `arcjet`, `openrouter`, a status code, the word "exception").
+
+**Retry policy: one attempt, and only before a single token exists.** At that point the browser has seen nothing and the row holds nothing, so a second attempt is the same request rather than a duplicate of a partial one. Past the first token there is no retry anywhere. Never on 429 — that is the provider answering clearly, and free models are busy often enough that retrying would turn a failed lane into a slow one. Never on a 4xx, which is our own mistake and will not improve.
+
+**109 tests: 71 unit, 38 against the database.**
+
+### Honesty about what is verified
+
+The taxonomy, the classification of upstream statuses and the retry rule are covered by tests. The dependency isolation is not simulated end to end: making Clerk, Arcjet or PostHog actually fail in a test means mocking them, and this project deliberately avoids mocks. What stands behind those changes is the code review plus the manual pass, and the fact that each failure now has one obvious place to look.
+
+The one gap worth naming rather than glossing: nothing automatically proves that an Arcjet outage results in an allowed request. That behaviour is a `.catch()` returning `null` and a `decision?.isDenied()`, which is about as legible as it gets, but "legible" is not "verified".
+
 ### Verification
 
 - simulate upstream 429
@@ -532,17 +585,17 @@ Security failures must retain their intentionally chosen fail-open/fail-closed s
 
 - verify retry counts remain bounded
 
-- [ ] Define error taxonomy
+- [x] Define error taxonomy — `lib/failure.ts`
 
-- [ ] Define retryable vs non-retryable errors
+- [x] Define retryable vs non-retryable errors
 
-- [ ] Implement bounded retry policy where justified
+- [x] Implement bounded retry policy where justified — one attempt, before the first token only
 
-- [ ] Isolate non-critical dependencies
+- [x] Isolate non-critical dependencies — analytics off the request path
 
-- [ ] Verify partial failures
+- [x] Verify partial failures — see the honesty note below
 
-- [ ] Document failure semantics
+- [x] Document failure semantics
 
 ---
 

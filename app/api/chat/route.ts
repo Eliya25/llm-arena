@@ -3,7 +3,13 @@ import { auth } from "@clerk/nextjs/server";
 import { aj } from "@/lib/arcjet";
 import { env } from "@/lib/env";
 import { getFreeModelCatalog } from "@/lib/openrouter";
-import { getPostHogClient } from "@/lib/posthog-server";
+import {
+  asResponse,
+  classifyUpstream,
+  failure,
+  worthRetrying,
+} from "@/lib/failure";
+import { track } from "@/lib/analytics";
 import { claimAnswerRow } from "./answer-row";
 import { readChatRequest } from "./request-shape";
 import {
@@ -54,6 +60,56 @@ function withFinalFrame(result: Promise<AnswerResult | null>) {
   });
 }
 
+// One retry, and only before a single token exists.
+//
+// At this point the browser has seen nothing and the row holds nothing, so a
+// second attempt is genuinely the same request rather than a duplicate of a
+// partial one. Once tokens are flowing that stops being true, which is why
+// there is no retry anywhere past this function.
+//
+// Never on 429: that is the provider answering clearly, and asking again
+// immediately only spends the same quota to be told the same thing. Free-tier
+// models are busy often enough that retrying them would make a slow lane out
+// of an already-failed one.
+async function callUpstream(
+  model: string,
+  messages: readonly { role: string; content: string }[],
+  signal: AbortSignal,
+): Promise<Response | null> {
+  const attempt = () =>
+    fetch("https://openrouter.ai/api/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${env.OPENROUTER_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model,
+        stream: true,
+        // Ask OpenRouter to append real token usage to the final stream chunk,
+        // so what gets measured is reported usage, never an estimate.
+        usage: { include: true },
+        messages,
+      }),
+      signal,
+    }).catch((cause: unknown) => {
+      console.error("OpenRouter request threw", { model, cause });
+      return null;
+    });
+
+  const first = await attempt();
+  if (first && (first.ok || !worthRetrying(first.status))) return first;
+  // The watchdog may have ended this while we were deciding.
+  if (signal.aborted) return first;
+
+  console.error("Retrying OpenRouter once", {
+    model,
+    status: first?.status ?? "threw",
+  });
+  // The body of a failed response is never read, so dropping it is safe.
+  return (await attempt()) ?? first;
+}
+
 // One request here = one model's own independent stream. The client opens
 // one of these per selected model so a slow or failing model never blocks
 // the others (docs/scope.md Feature 1).
@@ -70,13 +126,18 @@ export async function POST(request: NextRequest) {
   // Sending needs an account — decided in docs/scope.md Feature 8 ("only
   // sending a prompt and voting need sign-in"). The UI gates this too, but
   // the rule has to hold at the endpoint, not just in the browser.
-  const { userId } = await auth();
-  if (!userId) {
-    return Response.json(
-      { error: "Please sign in to send a prompt." },
-      { status: 401 },
-    );
-  }
+  //
+  // Fails closed, deliberately: if Clerk cannot be reached we cannot tell who
+  // is asking, and a thread has to belong to someone. Refusing is the only
+  // answer that keeps that true. Unwrapped, this was an unhandled throw — a
+  // 500 with a raw error behind it.
+  const userId = await auth()
+    .then(({ userId }) => userId)
+    .catch((cause: unknown) => {
+      console.error("Could not establish identity", { cause });
+      return null;
+    });
+  if (!userId) return asResponse(failure("unauthenticated"));
   const distinctId = userId;
 
   // Arcjet sits in front of the model call: rate limiting (per-person, across
@@ -84,26 +145,39 @@ export async function POST(request: NextRequest) {
   // and prompt-injection detection (docs/scope.md Feature 6). It also now
   // guards this route's own writes, which is why the separate weighted cost
   // the old createTurn action paid is gone with it.
-  const decision = await aj.protect(request, {
-    userId: distinctId,
-    requested: 1,
-    detectPromptInjectionMessage: latestPrompt,
-    // Scan the latest user message explicitly — the body was already consumed
-    // by request.json() above, so the deprecated whole-body scan can't run.
-    sensitiveInfoValue: latestPrompt,
-  });
+  //
+  // Fails OPEN when Arcjet itself cannot be reached, and that is a decision
+  // rather than an accident. Arcjet here is abuse mitigation, not
+  // authorization: the caller is already signed in, the model allowlist below
+  // still holds, and every model is free, so the blast radius of an
+  // unprotected minute is bounded. Failing closed would turn a vendor outage
+  // into a total outage of the product's one feature. The accepted risk is
+  // real and worth naming — during such a minute the rate limit, the
+  // injection check and the card-number check are all absent — which is why
+  // it is logged at error level rather than swallowed.
+  const decision = await aj
+    .protect(request, {
+      userId: distinctId,
+      requested: 1,
+      detectPromptInjectionMessage: latestPrompt,
+      // Scan the latest user message explicitly — the body was already
+      // consumed by request.json() above, so the deprecated whole-body scan
+      // can't run.
+      sensitiveInfoValue: latestPrompt,
+    })
+    .catch((cause: unknown) => {
+      console.error("Arcjet unreachable, allowing the request", { cause });
+      return null;
+    });
 
-  if (decision.isDenied()) {
+  if (decision?.isDenied()) {
     console.error("Arcjet denied request", {
       reason: decision.reason,
       userId: distinctId,
     });
 
     if (decision.reason.isRateLimit()) {
-      return Response.json(
-        { error: "You're sending requests too quickly. Please slow down." },
-        { status: 429 },
-      );
+      return asResponse(failure("rate_limited"));
     }
 
     if (decision.reason.isSensitiveInfo()) {
@@ -126,10 +200,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    return Response.json(
-      { error: "Your request couldn't be processed. Please try again." },
-      { status: 403 },
-    );
+    return asResponse(failure("security_denied"));
   }
 
   // The browser's picker only offers free-tier models, but that's not a
@@ -138,10 +209,16 @@ export async function POST(request: NextRequest) {
   // free-tier catalog go upstream; if the catalog can't be fetched, this
   // deliberately fails closed rather than forwarding unverified ids.
   const catalog = await getFreeModelCatalog();
+  // An empty catalog means the list could not be fetched, not that every model
+  // vanished. Still fails closed — we cannot vouch for a model we cannot see —
+  // but telling someone to pick from a list an outage just emptied is a maze
+  // with no exit.
+  if (catalog.length === 0) {
+    console.error("Model catalog unavailable, refusing to forward", { model });
+    return asResponse(failure("catalog_unavailable"));
+  }
   if (!catalog.some((entry) => entry.id === model)) {
-    return badRequest(
-      "That model isn't available here. Pick one from the model list.",
-    );
+    return asResponse(failure("model_not_allowed"));
   }
 
   // Before the model is called, not after it answers: by the time a token
@@ -175,20 +252,15 @@ export async function POST(request: NextRequest) {
   // to the disconnect would only have published "didn't answer" over a
   // generation that was still on its way.
 
-  const posthog = getPostHogClient();
-
-  // Track that the user submitted a prompt to a model.
-  if (posthog) {
-    posthog.capture({
-      distinctId,
-      event: "prompt_submitted",
-      properties: {
-        model,
-        prompt_length: latestPrompt.length,
-        message_count: messages.length,
-      },
-    });
-  }
+  track({
+    distinctId,
+    event: "prompt_submitted",
+    properties: {
+      model,
+      prompt_length: latestPrompt.length,
+      message_count: messages.length,
+    },
+  });
 
   // The server's own stall watchdog. A silent upstream is aborted here rather
   // than waited on forever — and rather than being the browser's job, which is
@@ -204,28 +276,7 @@ export async function POST(request: NextRequest) {
   };
   armWatchdog(false);
 
-  const upstream = await fetch(
-    "https://openrouter.ai/api/v1/chat/completions",
-    {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${env.OPENROUTER_API_KEY}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model,
-        stream: true,
-        // Ask OpenRouter to append real token usage to the final stream chunk,
-        // so what gets measured is reported usage, never an estimate.
-        usage: { include: true },
-        messages,
-      }),
-      signal: upstreamAbort.signal,
-    },
-  ).catch((cause) => {
-    console.error("OpenRouter request threw", { model, cause });
-    return null;
-  });
+  const upstream = await callUpstream(model, messages, upstreamAbort.signal);
   // Time to first token is measured from here — response headers in hand — so
   // it is the model's own latency and carries neither the browser's connection
   // nor the time spent reaching OpenRouter.
@@ -237,50 +288,30 @@ export async function POST(request: NextRequest) {
     const detail = upstream ? await upstream.text().catch(() => "") : "";
     console.error("OpenRouter request failed", { model, status, detail });
 
-    // Track model failure so it can be monitored in PostHog.
-    if (posthog) {
-      posthog.capture({
-        distinctId,
-        event: "model_response_failed",
-        properties: { model, status_code: status },
-      });
-      await posthog.flush();
-    }
+    track({
+      distinctId,
+      event: "model_response_failed",
+      properties: { model, status_code: status },
+    });
 
     // The browser can't write this outcome, so the route records it.
     await markAnswerFailed(row.messageId, row.attempt);
 
-    // A 429 from upstream isn't silence — the model answered, and the answer
-    // was "I'm full". Free-tier models share a provider pool, so this is the
-    // single most common way a lane fails here; saying "didn't respond" would
-    // send someone debugging their own prompt instead of just picking another
-    // model or waiting a moment.
-    if (status === 429) {
-      return Response.json(
-        {
-          error:
-            "This model is busy right now. Try again in a moment, or pick a different one.",
-        },
-        { status: 429, headers: answerHeaders },
-      );
-    }
-
+    // A 429 is not silence — the model answered, and the answer was "I'm
+    // full". classifyUpstream keeps that distinction, and the wording that
+    // goes with it, in one place.
+    const failed = classifyUpstream(status);
     return Response.json(
-      { error: "The model didn't respond. Please try again." },
-      { status: 502, headers: answerHeaders },
+      { error: failed.message },
+      { status: failed.status, headers: answerHeaders },
     );
   }
 
-  // Track a successful model response.
-  if (posthog) {
-    posthog.capture({
-      distinctId,
-      event: "model_response_received",
-      properties: { model },
-    });
-    // This route handler is short-lived — flush before the response streams.
-    await posthog.flush();
-  }
+  track({
+    distinctId,
+    event: "model_response_received",
+    properties: { model },
+  });
 
   // One copy streams to the browser, the other is the app's own record of what
   // the model actually said. The recording branch is handed to after(), so the
