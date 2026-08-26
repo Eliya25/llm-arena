@@ -5,6 +5,7 @@ import { request as arcjetRequest } from "@arcjet/next";
 import { ajActions } from "@/lib/arcjet";
 import { prisma } from "@/lib/prisma";
 import { track } from "@/lib/analytics";
+import { describeCause, log, newRequestId } from "@/lib/telemetry";
 import { judgeVote } from "./vote-rules";
 
 const SIGN_IN_ERROR = "Please sign in to do that.";
@@ -38,7 +39,11 @@ export async function getOwnThreads(): Promise<ThreadListItem[]> {
     });
     return threads;
   } catch (cause) {
-    console.error("getOwnThreads failed", cause);
+    log.error(
+      "thread_list_failed",
+      { requestId: newRequestId() },
+      { cause: describeCause(cause) },
+    );
     return [];
   }
 }
@@ -56,10 +61,15 @@ async function authorize(requested: number): Promise<Authorized | ActionError> {
     requested,
   });
   if (decision.isDenied()) {
-    console.error("Arcjet denied server action", {
-      reason: decision.reason,
-      userId,
-    });
+    log.warn(
+      "security_denied",
+      { requestId: newRequestId(), userId },
+      {
+        surface: "server-action",
+        reason: decision.reason.type,
+        isRateLimit: decision.reason.isRateLimit(),
+      },
+    );
     return {
       error: decision.reason.isRateLimit() ? RATE_LIMIT_ERROR : GENERIC_ERROR,
     };
@@ -129,7 +139,11 @@ export async function castVote(input: {
 
     return { ok: true };
   } catch (cause) {
-    console.error("castVote failed", cause);
+    log.error(
+      "vote_failed",
+      { requestId: newRequestId(), turnId: input.turnId },
+      { cause: describeCause(cause) },
+    );
     // The @unique on turnId means a double-vote lands here, not silently.
     return { error: GENERIC_ERROR };
   }

@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { trackAndWait } from "@/lib/analytics";
+import { describeCause, log, type Correlation } from "@/lib/telemetry";
 import {
   BLANK_READING,
   absorb,
@@ -39,6 +40,9 @@ type Recording = {
   // Called on every chunk that arrives, so the route's stall watchdog can
   // tell a slow model from a dead one.
   onProgress: (hasFirstToken: boolean) => void;
+  // Carried from the route so the lines this writes minutes later join the
+  // ones written before the model was called.
+  trace: Correlation;
 };
 
 // Writes down what has arrived so far. Returns whether this attempt still owns
@@ -59,10 +63,8 @@ async function checkpoint(
     });
     return written.count > 0;
   } catch (cause) {
-    console.error("Checkpointing an answer failed", {
-      messageId: details.messageId,
-      attempt: details.attempt,
-      cause,
+    log.error("checkpoint_failed", details.trace, {
+      cause: describeCause(cause),
     });
     return true;
   }
@@ -84,10 +86,8 @@ async function stillOwned(details: Recording): Promise<boolean> {
     });
     return owner !== null;
   } catch (cause) {
-    console.error("Checking answer ownership failed", {
-      messageId: details.messageId,
-      attempt: details.attempt,
-      cause,
+    log.error("ownership_check_failed", details.trace, {
+      cause: describeCause(cause),
     });
     return true;
   }
@@ -183,6 +183,7 @@ async function readStream(
         return { outcome: "complete", reading: cursor.reading };
       }
 
+      const hadFirstToken = cursor.reading.firstTokenAt !== null;
       cursor = {
         ...absorb(
           cursor,
@@ -197,11 +198,17 @@ async function readStream(
       // leaving the watchdog on the generous initial-response budget when it
       // should already have switched to the shorter between-token one.
       details.onProgress(cursor.reading.firstTokenAt !== null);
+      if (!hadFirstToken && cursor.reading.firstTokenAt !== null) {
+        // The moment "the model is thinking" becomes "the model is answering",
+        // which is the boundary a report of "it stopped halfway" lands on.
+        log.info("generation_first_token", details.trace, {
+          ttftMs: Math.round(cursor.reading.firstTokenAt - details.upstreamAt),
+        });
+      }
     }
   } catch (cause) {
-    console.error("Answer stream read failed", {
-      messageId: details.messageId,
-      cause,
+    log.error("stream_read_failed", details.trace, {
+      cause: describeCause(cause),
     });
     return { outcome: "interrupted", reading: cursor.reading };
   }
@@ -252,21 +259,52 @@ export async function recordAnswer(
           })
           .then((written) => written.count > 0)
           .catch((cause: unknown) => {
-            console.error("Persisting an answer failed", {
-              messageId: details.messageId,
-              attempt: details.attempt,
-              cause,
+            log.error("persist_failed", details.trace, {
+              cause: describeCause(cause),
             });
             return false;
           });
 
   if (!stored) {
-    console.warn("Discarded an answer this attempt no longer owns", {
-      messageId: details.messageId,
-      attempt: details.attempt,
-      outcome,
-    });
+    log.warn("answer_discarded", details.trace, { outcome });
   }
+
+  log[status === "SUCCESS" ? "info" : "warn"](
+    "generation_finished",
+    details.trace,
+    {
+      status,
+      outcome,
+      stored,
+      ttftMs: metrics.timeToFirstTokenMs,
+      durationMs: metrics.generationDurationMs,
+      tokensPerSecond:
+        metrics.tokensPerSecond !== null
+          ? Math.round(metrics.tokensPerSecond)
+          : null,
+      outputTokens: reading.outputTokens,
+      contentLength: reading.content.length,
+    },
+  );
+
+  // The same facts to PostHog, where they become the rates and percentiles
+  // this feature asks for — success rate per model, TTFT p95, how often a
+  // generation ends without finishing. No new vendor: PostHog is already here.
+  await trackAndWait({
+    distinctId: details.distinctId,
+    event: "generation_finished",
+    properties: {
+      model: details.model,
+      status,
+      outcome,
+      stored,
+      attempt: details.attempt,
+      ttft_ms: metrics.timeToFirstTokenMs,
+      duration_ms: metrics.generationDurationMs,
+      tokens_per_second: metrics.tokensPerSecond,
+      output_tokens: reading.outputTokens,
+    },
+  });
 
   // Captured either way: the model call really happened and really cost
   // latency, whether or not its answer was still wanted by the time it landed.
@@ -298,7 +336,11 @@ export async function recordAnswer(
 
 // The model never answered at all, so the row says so. Written here because
 // the route is the only side that knows the upstream call failed.
-export async function markAnswerFailed(messageId: string, attempt: number) {
+export async function markAnswerFailed(
+  messageId: string,
+  attempt: number,
+  trace: Correlation,
+) {
   try {
     // Conditioned like every other write here: if a retry already claimed the
     // row, this attempt's failure is not the row's story any more.
@@ -307,10 +349,8 @@ export async function markAnswerFailed(messageId: string, attempt: number) {
       data: { status: "FAILED" },
     });
   } catch (cause) {
-    console.error("Marking an answer failed did not persist", {
-      messageId,
-      attempt,
-      cause,
+    log.error("mark_failed_did_not_persist", trace, {
+      cause: describeCause(cause),
     });
   }
 }

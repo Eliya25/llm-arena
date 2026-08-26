@@ -17,6 +17,7 @@ const claim = async (): Promise<AnswerRow> => {
     model: "test/model",
     prompt: "a prompt",
     clerkId,
+    trace: { requestId: `test-${crypto.randomUUID()}` },
   });
   if (!row) throw new Error("could not claim a row");
   return row;
@@ -187,6 +188,7 @@ describe("a new attempt", () => {
       model: "test/model",
       prompt: "a prompt",
       clerkId: turn?.thread.user.clerkId ?? "",
+      trace: { requestId: `test-${crypto.randomUUID()}` },
     });
 
     expect(retry?.attempt).toBe(row.attempt + 1);

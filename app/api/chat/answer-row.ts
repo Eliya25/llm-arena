@@ -1,5 +1,6 @@
 import { Prisma } from "@/lib/generated/prisma/client";
 import { prisma } from "@/lib/prisma";
+import { describeCause, log, type Correlation } from "@/lib/telemetry";
 
 const THREAD_TITLE_LENGTH = 80;
 const UNIQUE_VIOLATION = "P2002";
@@ -75,7 +76,7 @@ async function findOrCreate<T>(
 // does closes out anything of theirs left hanging far longer than any live
 // request could still be writing it. Best-effort by nature: a failure here
 // must never stop the answer the caller is actually asking for.
-async function closeAbandonedAnswers(userId: string) {
+async function closeAbandonedAnswers(userId: string, trace: Correlation) {
   try {
     await prisma.message.updateMany({
       where: {
@@ -86,7 +87,7 @@ async function closeAbandonedAnswers(userId: string) {
       data: { status: "FAILED" },
     });
   } catch (cause) {
-    console.error("Sweeping abandoned answers failed", { userId, cause });
+    log.error("abandoned_sweep_failed", trace, { cause: describeCause(cause) });
   }
 }
 
@@ -165,6 +166,7 @@ export async function claimAnswerRow(params: {
   model: string;
   prompt: string;
   clerkId: string;
+  trace: Correlation;
 }): Promise<AnswerRow | null> {
   const { target, model, prompt, clerkId } = params;
 
@@ -173,7 +175,7 @@ export async function claimAnswerRow(params: {
     () => prisma.user.create({ data: { clerkId }, select: { id: true } }),
   );
   if (!user) return null;
-  await closeAbandonedAnswers(user.id);
+  await closeAbandonedAnswers(user.id, params.trace);
 
   const turn = await resolveTurn(target, user.id, prompt);
   if (!turn) return null;

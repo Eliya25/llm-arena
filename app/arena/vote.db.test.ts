@@ -23,6 +23,7 @@ const votableTurn = async () => {
         model,
         prompt: "a prompt",
         clerkId,
+        trace: { requestId: `test-${crypto.randomUUID()}` },
       }),
     ),
   );

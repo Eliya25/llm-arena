@@ -15,6 +15,7 @@ import {
 import { ajPublicRead } from "@/lib/arcjet";
 import { getFreeModelCatalog } from "@/lib/openrouter";
 import { prisma } from "@/lib/prisma";
+import { log, newRequestId } from "@/lib/telemetry";
 
 // Win record scoped to this thread: of the turns that got a vote, how many
 // each participating model won. Global records are the leaderboard's job.
@@ -55,7 +56,11 @@ const allowRead = cache(async () => {
     requested: 1,
   });
   if (decision.isDenied()) {
-    console.error("Arcjet denied thread read", { reason: decision.reason });
+    log.warn(
+      "security_denied",
+      { requestId: newRequestId() },
+      { surface: "public-thread-read", reason: decision.reason.type },
+    );
     return false;
   }
   return true;
