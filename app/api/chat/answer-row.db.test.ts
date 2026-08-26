@@ -15,7 +15,14 @@ const claim = (
   clerkId: string,
   target: Parameters<typeof claimAnswerRow>[0]["target"],
   model = "test/model",
-) => claimAnswerRow({ target, model, prompt: "a prompt", clerkId });
+) =>
+  claimAnswerRow({
+    target,
+    model,
+    prompt: "a prompt",
+    clerkId,
+    trace: { requestId: `test-${crypto.randomUUID()}` },
+  });
 
 afterAll(async () => {
   const turns = await prisma.turn.findMany({
@@ -87,6 +94,7 @@ describe("claiming a row for a new prompt", () => {
       model: "test/model",
       prompt: "what is the capital of France",
       clerkId,
+      trace: { requestId: `test-${crypto.randomUUID()}` },
     });
 
     const turn = await prisma.turn.findUnique({
@@ -151,6 +159,7 @@ describe("retrying", () => {
       model: "test/model",
       prompt: "the original question",
       clerkId,
+      trace: { requestId: `test-${crypto.randomUUID()}` },
     });
 
     await claimAnswerRow({
@@ -158,6 +167,7 @@ describe("retrying", () => {
       model: "test/model",
       prompt: "something else entirely",
       clerkId,
+      trace: { requestId: `test-${crypto.randomUUID()}` },
     });
 
     const turn = await prisma.turn.findUnique({ where: { id: first?.turnId } });
