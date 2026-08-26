@@ -10,6 +10,12 @@ import {
   worthRetrying,
 } from "@/lib/failure";
 import { track } from "@/lib/analytics";
+import {
+  describeCause,
+  log,
+  newRequestId,
+  type Correlation,
+} from "@/lib/telemetry";
 import { claimAnswerRow } from "./answer-row";
 import { readChatRequest } from "./request-shape";
 import {
@@ -75,6 +81,7 @@ async function callUpstream(
   model: string,
   messages: readonly { role: string; content: string }[],
   signal: AbortSignal,
+  trace: Correlation,
 ): Promise<Response | null> {
   const attempt = () =>
     fetch("https://openrouter.ai/api/v1/chat/completions", {
@@ -93,7 +100,7 @@ async function callUpstream(
       }),
       signal,
     }).catch((cause: unknown) => {
-      console.error("OpenRouter request threw", { model, cause });
+      log.error("upstream_threw", trace, { cause: describeCause(cause) });
       return null;
     });
 
@@ -102,10 +109,7 @@ async function callUpstream(
   // The watchdog may have ended this while we were deciding.
   if (signal.aborted) return first;
 
-  console.error("Retrying OpenRouter once", {
-    model,
-    status: first?.status ?? "threw",
-  });
+  log.warn("upstream_retried", trace, { status: first?.status ?? null });
   // Release the failed response before asking again. An unconsumed body keeps
   // its connection pinned until garbage collection, and a provider outage is
   // exactly when that matters: three lanes per prompt, every one of them
@@ -123,9 +127,19 @@ async function callUpstream(
 // status, and metrics from its own copy — the browser supplies which row and
 // nothing else (docs/scope-v2.md Feature 1).
 export async function POST(request: NextRequest) {
+  const requestId = newRequestId();
+  // Grows as the request learns who and what it is about. Passing it down is
+  // what lets a line written by the recorder minutes later join a line written
+  // here before the model was even called.
+  let trace: Correlation = { requestId };
+
   const shape = readChatRequest(await request.json());
-  if (!shape.ok) return badRequest(shape.error);
+  if (!shape.ok) {
+    log.warn("request_rejected", trace, { reason: shape.error });
+    return badRequest(shape.error);
+  }
   const { model, messages, target, prompt: latestPrompt } = shape.request;
+  trace = { ...trace, model };
 
   // Sending needs an account — decided in docs/scope.md Feature 8 ("only
   // sending a prompt and voting need sign-in"). The UI gates this too, but
@@ -138,11 +152,12 @@ export async function POST(request: NextRequest) {
   const userId = await auth()
     .then(({ userId }) => userId)
     .catch((cause: unknown) => {
-      console.error("Could not establish identity", { cause });
+      log.error("identity_unavailable", trace, { cause: describeCause(cause) });
       return null;
     });
   if (!userId) return asResponse(failure("unauthenticated"));
   const distinctId = userId;
+  trace = { ...trace, userId: distinctId };
 
   // Arcjet sits in front of the model call: rate limiting (per-person, across
   // all three parallel model streams a prompt fans out to), bot protection,
@@ -170,14 +185,17 @@ export async function POST(request: NextRequest) {
       sensitiveInfoValue: latestPrompt,
     })
     .catch((cause: unknown) => {
-      console.error("Arcjet unreachable, allowing the request", { cause });
+      log.error("security_unavailable", trace, {
+        cause: describeCause(cause),
+        posture: "fail-open",
+      });
       return null;
     });
 
   if (decision?.isDenied()) {
-    console.error("Arcjet denied request", {
-      reason: decision.reason,
-      userId: distinctId,
+    log.warn("security_denied", trace, {
+      reason: decision.reason.type,
+      isRateLimit: decision.reason.isRateLimit(),
     });
 
     if (decision.reason.isRateLimit()) {
@@ -218,7 +236,7 @@ export async function POST(request: NextRequest) {
   // but telling someone to pick from a list an outage just emptied is a maze
   // with no exit.
   if (catalog.length === 0) {
-    console.error("Model catalog unavailable, refusing to forward", { model });
+    log.error("catalog_unavailable", trace, {});
     return asResponse(failure("catalog_unavailable"));
   }
   if (!catalog.some((entry) => entry.id === model)) {
@@ -231,19 +249,32 @@ export async function POST(request: NextRequest) {
   const row = await claimAnswerRow({
     target,
     model,
+    trace,
     prompt: latestPrompt,
     clerkId: distinctId,
-  }).catch((cause) => {
-    console.error("Claiming an answer row failed", { model, cause });
+  }).catch((cause: unknown) => {
+    log.error("row_claim_failed", trace, { cause: describeCause(cause) });
     return null;
   });
   if (!row) {
+    log.warn("row_unavailable", trace, {});
     return badRequest("This answer couldn't be started. Please try again.");
   }
+  trace = {
+    ...trace,
+    threadId: row.threadId,
+    turnId: row.turnId,
+    messageId: row.messageId,
+    attempt: row.attempt,
+  };
+  log.info("generation_claimed", trace, {});
   // The ids travel back on the response itself, so the browser learns where
   // this answer lives the moment the stream opens rather than by racing a
   // separate write. They are the only thing it needs for voting and retrying.
   const answerHeaders = {
+    // Quotable by anyone reporting a problem, and the key that finds every
+    // line this request wrote.
+    "X-Arena-Request-Id": requestId,
     "X-Arena-Thread-Id": row.threadId,
     "X-Arena-Turn-Id": row.turnId,
     "X-Arena-Message-Id": row.messageId,
@@ -280,7 +311,12 @@ export async function POST(request: NextRequest) {
   };
   armWatchdog(false);
 
-  const upstream = await callUpstream(model, messages, upstreamAbort.signal);
+  const upstream = await callUpstream(
+    model,
+    messages,
+    upstreamAbort.signal,
+    trace,
+  );
   // Time to first token is measured from here — response headers in hand — so
   // it is the model's own latency and carries neither the browser's connection
   // nor the time spent reaching OpenRouter.
@@ -303,8 +339,7 @@ export async function POST(request: NextRequest) {
       ? failure("upstream_timeout")
       : classifyUpstream(status);
 
-    console.error("OpenRouter request failed", {
-      model,
+    log.error("generation_failed", trace, {
       kind: failed.kind,
       status,
       detail,
@@ -317,7 +352,7 @@ export async function POST(request: NextRequest) {
     });
 
     // The browser can't write this outcome, so the route records it.
-    await markAnswerFailed(row.messageId, row.attempt);
+    await markAnswerFailed(row.messageId, row.attempt, trace);
     return Response.json(
       { error: failed.message },
       { status: failed.status, headers: answerHeaders },
@@ -342,6 +377,7 @@ export async function POST(request: NextRequest) {
     distinctId,
     upstreamAt,
     onProgress: armWatchdog,
+    trace,
   }).finally(() => clearTimeout(stallTimer));
   after(recording);
 

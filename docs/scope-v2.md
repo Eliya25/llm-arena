@@ -61,7 +61,7 @@ The existing product behavior should remain intact while V2 hardens the implemen
 | 1   | Server-authoritative generation & metrics     | Trust & Correctness | P0       | complete    |
 | 2   | Idempotent persistence & lifecycle invariants | Trust & Correctness | P0       | complete    |
 | 3   | Reliability & failure policy                  | Reliability         | P0       | complete    |
-| 4   | Production observability & traceability       | Operations          | P1       | not started |
+| 4   | Production observability & traceability       | Operations          | P1       | complete    |
 | 5   | Automated test suite                          | Verification        | P1       | complete    |
 | 6   | Sharing lifecycle & data ownership            | Security / Product  | P1       | not started |
 | 7   | Database & leaderboard scalability            | Performance         | P1       | not started |
@@ -617,6 +617,28 @@ the system should provide enough evidence to reconstruct what happened.
 
 Make each Arena operation traceable without logging sensitive user data carelessly.
 
+### What is there today (2026-08-26)
+
+Twenty-four `console.error` / `console.warn` sites across `app/` and `lib/`. They are better than nothing and worse than they look: each is a message string plus an ad-hoc object, and the keys differ everywhere. `messageId` and `attempt` appear together in the recorder, `model` and `status` in the route, `userId` in the Arcjet paths. No line carries enough to join it to another line about the same generation.
+
+So the honest description of today: we can tell that _something_ failed, and usually what kind. We cannot follow one answer through the system, which is precisely what the reported-incident scenario in this feature asks for.
+
+Two things already exist and should not be rebuilt. `$ai_generation` in PostHog already carries per-call model, tokens and latency. And Feature 3's taxonomy already names failures — `failed.kind` is a classification the logs can be grouped by, rather than a string someone has to pattern-match.
+
+### Plan
+
+**A. One logger, no vendor.** A small module emitting a single structured event per line: `event`, a severity, the correlation fields, and nothing else. `console` remains the transport, because the host already collects stdout and adding a log vendor to a project this size is the "logo on the stack" the scope warns about. What changes is the shape, not the destination.
+
+**B. Correlation fields, threaded rather than guessed.** A generation already has everything it needs — `threadId`, `turnId`, `messageId`, `attempt`, `model`, and the Clerk user — the identifiers are simply not on the log lines. They get bundled once where the row is claimed and passed down, so the recorder's late failure and the route's early one carry the same keys.
+
+Plus a `requestId` per HTTP request, which is the one identifier that does not exist yet and is the only way to join lines emitted before a row is claimed — the Arcjet decision, the catalog check, a validation refusal.
+
+**C. Lifecycle events, not just failures.** Today only failures are recorded, so a healthy generation is invisible and the denominator for every rate is unknown. The generation gets named events at its real boundaries: claimed, upstream called, first token, completed. That is what makes "Gemini stopped halfway" answerable.
+
+**D. Redaction as a rule of the module, not a habit of the caller.** No prompt text, no answer text, no keys — enforced by the logger's own field list rather than by everyone remembering. Lengths and counts are fine; content is not.
+
+**E. Verify by reconstructing.** The stated test for this feature is that one failed turn can be rebuilt from telemetry. That is a real exercise, not an assertion: fail a lane on purpose, then follow it from request to persistence using only the logs.
+
 ### Correlation
 
 Every relevant operation should be connectable through identifiers such as:
@@ -644,6 +666,22 @@ stream completion/failure
    ->
 database persistence
 ```
+
+### Built (2026-08-26)
+
+`lib/telemetry.ts`, `console` still the transport. Every one of the twenty-four ad-hoc `console.error` sites is now a named event with the same correlation keys.
+
+**Correlation.** `requestId` is the one identifier that had to be invented — it is what joins lines written before a row exists (the security decision, the catalog check, a refused request) to lines written minutes later by the recorder. Everything else already existed and simply was not on the logs: `threadId`, `turnId`, `messageId`, `attempt`, `model`, the Clerk user. The route builds a `trace` that grows as it learns them and hands it down; the recorder writes with the same object. The id also comes back on the response as `X-Arena-Request-Id`, so it is quotable by anyone reporting a problem.
+
+**Lifecycle, not just failure.** `generation_claimed`, `generation_first_token`, `generation_finished` — plus the failures. Only failures were recorded before, which meant a healthy generation was invisible and every rate had an unknown denominator. `generation_first_token` matters more than it looks: it is the boundary that separates "never answered" from "stopped halfway", which is the distinction a report of this kind turns on.
+
+**Redaction is the logger's property, not the caller's habit.** Detail values are primitives only, so a whole prompt cannot arrive by a careless spread, and any string over 200 characters becomes `[N chars]`. `describeCause` keeps an `Error`'s name and message and refuses to dump anything else, since a thrown object can carry a request body or a connection string. A test fails if a prompt or an answer ever reaches a line.
+
+**Metrics ride on PostHog, which was already here.** `generation_finished` carries model, status, outcome, attempt, TTFT, duration, tok/s and tokens — enough for success rate per model, TTFT percentiles, the 429 rate and how often a generation ends without finishing. No new vendor, per the scope's own instruction.
+
+**The reconstruction is a test.** `traceability.db.test.ts` runs a generation that dies partway and then rebuilds the story from the log lines alone, joined by request id: claimed, first token at ~400ms, stream read failed with a bounded cause, finished as `FAILED`/`interrupted` with the partial content kept. It also asserts the prompt and the answer appear nowhere. Written as a test rather than performed once by hand, because a thing verified once and then deleted is exactly how Feature 1 ended up with six throwaway scripts.
+
+**127 tests: 83 unit, 44 against the database.**
 
 ### Structured logging
 
@@ -687,12 +725,12 @@ Choose the actual telemetry implementation only after deciding what information 
 
 Do not add another observability vendor simply to add a logo to the stack.
 
-- [ ] Define correlation identifiers
-- [ ] Add structured operational logs
-- [ ] Add generation lifecycle events
-- [ ] Define key production metrics
-- [ ] Ensure sensitive data is redacted
-- [ ] Verify one failed Arena turn can be reconstructed from telemetry
+- [x] Define correlation identifiers
+- [x] Add structured operational logs — `lib/telemetry.ts`
+- [x] Add generation lifecycle events
+- [x] Define key production metrics — `generation_finished` to PostHog
+- [x] Ensure sensitive data is redacted — enforced by the logger, not by callers
+- [x] Verify one failed Arena turn can be reconstructed from telemetry — as a test, not once by hand
 
 ---
 

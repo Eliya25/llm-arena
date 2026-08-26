@@ -18,6 +18,7 @@ const claim = async (model = "test/model"): Promise<AnswerRow> => {
     model,
     prompt: "a prompt",
     clerkId,
+    trace: { requestId: `test-${crypto.randomUUID()}` },
   });
   if (!row) throw new Error("could not claim a row");
   return row;
@@ -29,6 +30,7 @@ const retryOf = async (row: AnswerRow, clerkId: string) => {
     model: "test/model",
     prompt: "a prompt",
     clerkId,
+    trace: { requestId: `test-${crypto.randomUUID()}` },
   });
   if (!retry) throw new Error("could not claim the retry");
   return retry;
@@ -62,7 +64,10 @@ const record = (
     distinctId: "test",
     upstreamAt: performance.now(),
     onProgress,
+    trace: { requestId: `test-${crypto.randomUUID()}` },
   });
+
+const trace = () => ({ requestId: `test-${crypto.randomUUID()}` });
 
 const rowFor = (row: AnswerRow) =>
   prisma.message.findUnique({ where: { id: row.messageId } });
@@ -375,7 +380,7 @@ describe("an attempt that has been replaced", () => {
     });
 
     // The replaced attempt's upstream call fails, late.
-    await markAnswerFailed(row.messageId, row.attempt);
+    await markAnswerFailed(row.messageId, row.attempt, trace());
 
     expect(await rowFor(row)).toMatchObject({
       status: "SUCCESS",
@@ -385,7 +390,7 @@ describe("an attempt that has been replaced", () => {
 
   it("still records a failure for the attempt that owns the row", async () => {
     const row = await claim();
-    await markAnswerFailed(row.messageId, row.attempt);
+    await markAnswerFailed(row.messageId, row.attempt, trace());
     expect((await rowFor(row))?.status).toBe("FAILED");
   });
 });
