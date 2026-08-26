@@ -18,6 +18,14 @@ export default defineConfig({
     },
   },
   test: {
+    // One worker at a time. Each worker that touches the database builds its
+    // own connection pool, and the instance allows few enough connections that
+    // several at once exhaust them — which surfaces as most of the suite
+    // failing at once, for a reason nobody would trace back to connection
+    // counts. Serial workers plus the disconnect in the setup file mean at
+    // most one pool is ever open. The unit suite finishes in well under a
+    // second either way, so nothing is lost by not running it wider.
+    maxWorkers: 1,
     projects: [
       {
         extends: true,

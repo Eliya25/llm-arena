@@ -5,6 +5,7 @@ import { request as arcjetRequest } from "@arcjet/next";
 import { ajActions } from "@/lib/arcjet";
 import { prisma } from "@/lib/prisma";
 import { getPostHogClient } from "@/lib/posthog-server";
+import { judgeVote } from "./vote-rules";
 
 const SIGN_IN_ERROR = "Please sign in to do that.";
 const GENERIC_ERROR = "Something went wrong saving this. Please try again.";
@@ -97,26 +98,20 @@ export async function castVote(input: {
     if ("error" in authorized) return authorized;
     const { user } = authorized;
 
+    // Scoped to the caller: this query is what decides ownership, and it is
+    // deliberately not something judgeVote is trusted to remember.
     const turn = await prisma.turn.findFirst({
       where: { id: input.turnId, thread: { userId: user.id } },
       include: { messages: true, vote: true },
     });
     if (!turn) return { error: GENERIC_ERROR };
-    if (turn.vote) {
-      return { error: "This turn already has a winner." };
-    }
 
-    const winner = turn.messages.find(
-      (message) =>
-        message.id === input.messageId && message.status === "SUCCESS",
+    const verdict = judgeVote(
+      { messages: turn.messages, hasVote: turn.vote !== null },
+      input.messageId,
     );
-    const answered = turn.messages.filter(
-      (message) => message.status === "SUCCESS",
-    ).length;
-    // The rule: a vote only exists once two or more models actually answered.
-    if (!winner || answered < 2) {
-      return { error: "A vote needs at least two finished answers." };
-    }
+    if (!verdict.ok) return { error: verdict.error };
+    const { winner, answered } = verdict;
 
     await prisma.vote.create({
       data: { turnId: turn.id, messageId: winner.id },

@@ -1,3 +1,4 @@
+import { afterAll } from "vitest";
 import { config } from "dotenv";
 
 // Loaded here rather than by the app: the suite needs real credentials, and
@@ -28,3 +29,16 @@ if (testUrl === process.env.DATABASE_URL) {
 // at import time. Setup files run before any test module is imported, so
 // pointing it here is enough — no production code learns about testing.
 process.env.DATABASE_URL = testUrl;
+
+// Imported after the reassignment above, never before: lib/prisma builds its
+// connection pool at import time, and an early import would build it against
+// the wrong database.
+const { prisma } = await import("@/lib/prisma");
+
+// Hand the pool back at the end of every file. Without this each run leaves
+// its connections open, and a few runs in a row exhaust what the instance
+// allows — which looks like the tests themselves failing, in a heap, for no
+// reason anyone would connect to connection counts.
+afterAll(async () => {
+  await prisma.$disconnect();
+});
