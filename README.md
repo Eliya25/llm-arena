@@ -1,36 +1,60 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# LLM Arena
 
-## Getting Started
+Send one prompt to up to three AI models at once, watch them answer side by
+side, and vote for the best one. Real votes and real per-call measurements
+build a leaderboard of which model is actually worth using.
 
-First, run the development server:
+Every model is free tier, so cost always reads `$0.0000`. That is a real
+measured number, not a placeholder, and it is shown for that reason.
+
+> **Status:** V1 is complete and working. V2 — hardening the backend that sits
+> underneath it — is in progress. See `docs/scope-v2.md` for what is done and
+> what is open. A full architecture write-up is the last thing V2 does, once
+> the decisions it would describe have actually been made.
+
+## Stack
+
+Next.js App Router · TypeScript · PostgreSQL + Prisma · Clerk · OpenRouter ·
+Arcjet · PostHog · Vitest
+
+## Running it
+
+Needs Node 20+ and pnpm.
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
+pnpm install
+cp .env.example .env.local     # then fill it in
+pnpm prisma migrate deploy
 pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Every variable in `.env.example` is required — the app fails at startup on a
+missing one rather than halfway through a request. `TEST_DATABASE_URL` is the
+exception: only the test suite reads it, and it must point at a **different**
+database from `DATABASE_URL`.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Checking it
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+```bash
+pnpm test         # everything
+pnpm test:unit    # the fast half — no database, no environment needed
+pnpm typecheck
+pnpm lint
+pnpm build
+```
 
-## Learn More
+Tests cover what a person cannot see: concurrency, stale writes, streaming
+lifecycle, metric definitions. Everything visible is verified by hand against
+a real browser, using the list in `docs/manual-pass.md`.
 
-To learn more about Next.js, take a look at the following resources:
+## The documentation that matters
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+| file                  | what it holds                                                           |
+| --------------------- | ----------------------------------------------------------------------- |
+| `docs/scope.md`       | V1 — every feature, the decision behind it, and how it was verified     |
+| `docs/scope-v2.md`    | V2 — the hardening work, including what turned out to be wrong          |
+| `docs/manual-pass.md` | the browser checks, written down so they mean the same thing every time |
+| `CLAUDE.md`           | how this project is built and what it refuses to do                     |
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+These are the real record. They are written to be read by someone picking the
+project up cold, including the parts that did not go to plan.
