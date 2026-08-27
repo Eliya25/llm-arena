@@ -64,7 +64,7 @@ The existing product behavior should remain intact while V2 hardens the implemen
 | 4   | Production observability & traceability       | Operations          | P1       | complete    |
 | 5   | Automated test suite                          | Verification        | P1       | complete    |
 | 6   | Sharing lifecycle & data ownership            | Security / Product  | P1       | not started |
-| 7   | Database & leaderboard scalability            | Performance         | P1       | not started |
+| 7   | Database & leaderboard scalability            | Performance         | P1       | complete    |
 | 8   | Load, concurrency & capacity verification     | Performance         | P1       | not started |
 | 9   | CI/CD, migrations & deployment safety         | Delivery            | P1       | not started |
 | 10  | Architecture documentation & production story | Resume / Operations | P2       | not started |
@@ -941,6 +941,38 @@ That is reasonable for V1 traffic.
 
 V2 should determine how the design behaves as data grows.
 
+### What is there today (2026-08-27)
+
+Read off the schema and the call sites before measuring anything, because two of these are worth knowing going in.
+
+**There is not a single `@@index` in the schema.** Only primary keys and unique constraints. Postgres does not create an index for a foreign key on its own, which leaves:
+
+| column           | used by                                            | index today                                                   |
+| ---------------- | -------------------------------------------------- | ------------------------------------------------------------- |
+| `Thread.userId`  | the sidebar thread list, and every ownership check | **none**                                                      |
+| `Turn.threadId`  | loading a thread's turns                           | **none**                                                      |
+| `Vote.messageId` | the leaderboard's join back to the winning answer  | **none**                                                      |
+| `Message.turnId` | loading a turn's answers                           | covered, as the leading column of `@@unique([turnId, model])` |
+| `Vote.turnId`    | one vote per turn                                  | covered by `@unique`                                          |
+
+That is a plausible answer to this whole feature before a single measurement — and exactly why the scope says to measure first rather than start adding things.
+
+**The leaderboard loads every voted turn into memory.** `computeRows` fetches every turn that has a vote, with all of its messages, and tallies in JavaScript. Correct, and already separated into a pure function by Feature 5, which makes it easy to change without breaking. It is O(all votes ever) per page view.
+
+Eleven query sites in total across the thread list, thread loading, the claim path, voting, and the leaderboard.
+
+### Plan
+
+**A. Seed, in the test database only.** Representative data at 1,000 / 10,000 / 100,000 turns. Messages seeded without content, since none of these queries read `content` and storing three hundred thousand answers to measure an index would be silly.
+
+**B. Measure with `EXPLAIN (ANALYZE, BUFFERS)`.** Server-side execution time, which is what makes this honest over a remote database: the 94ms round trip to the instance does not enter the number. Rows read and index usage recorded alongside, since "fast enough" and "reading the whole table" are different facts and only one of them predicts what happens next.
+
+**C. Then decide, and only then.** The ladder in this feature is meant to be climbed as far as evidence requires and no further. If indexes are the answer, indexes are the answer, and stopping there gets written down as a result rather than as a shortcut.
+
+**D. Pagination is part of the question.** The sidebar's thread list and a thread's full turn history are both unbounded today. Whether that matters is a measurement, not an opinion.
+
+**E. Before and after, recorded as numbers.** Including for anything considered and rejected.
+
 ### Rule
 
 **Measure before optimizing.**
@@ -988,6 +1020,39 @@ Precomputed statistics / background aggregation
 
 Stopping at any level is valid if performance is already acceptable.
 
+### Measured (2026-08-27)
+
+Seeded into the test database only, then deleted. Turns with three answers each, 40% of them voted. `EXPLAIN (ANALYZE, BUFFERS)`, so the numbers are server-side execution time and the 94ms round trip to the instance does not enter them.
+
+| query                           | 1,000 turns | 10,000 | 100,000     |
+| ------------------------------- | ----------- | ------ | ----------- |
+| leaderboard: voted turns        | 1.9ms       | 15.7ms | **164.6ms** |
+| leaderboard: their messages     | 2.6ms       | 23.5ms | **233.5ms** |
+| leaderboard: metric averages    | 1.0ms       | 6.3ms  | **77.1ms**  |
+| sidebar: a user's threads       | 0.5ms       | 1.0ms  | 7.9ms       |
+| thread page: one thread's turns | 0.4ms       | 0.7ms  | 5.4ms       |
+| ownership check                 | 0.4ms       | 0.1ms  | 0.2ms       |
+
+Every one of them a sequential scan, because the schema had **no `@@index` at all** beyond primary keys and unique constraints, and Postgres does not index a foreign key on its own.
+
+**The leaderboard end to end, which is the number that actually matters:** 1,585ms and **160,003 rows shipped into Node** for a single page view at 100,000 turns. Server time is less than half of that; the rest is transfer and the JavaScript tally.
+
+### Decided, one rung at a time
+
+**Indexes — two kept, two rejected.** `Turn(threadId, createdAt)` took opening a thread from 5.4ms to 0.4ms. `Thread(userId, createdAt DESC)` took the sidebar from 5.02ms to 0.19ms.
+
+`Vote(messageId)` and `Message(status, model) INCLUDE (metrics)` were built, measured, and dropped. Neither changed a single query plan — the leaderboard joins votes by `turnId`, and 86% of messages are `SUCCESS`, so Postgres correctly prefers to scan. They would have cost write time and storage to achieve nothing. Recorded because "an index cannot hurt" is exactly the reasoning that fills a schema with dead weight.
+
+**A benchmark that lied, and why.** The first run gave every thread to one user, which made "find this user's threads" mean "read the whole table" — so no index could help and the measurement said `Thread(userId)` was worthless. Re-seeded at 2,000 users with 10 threads each, the same index is a 26× improvement. A benchmark whose data has the wrong _shape_ reports a useless index just as confidently as a correct one reports a useful one.
+
+**SQL-side aggregation — taken.** `computeRows` is now one statement: **1,585ms → 316ms, and 160,003 rows → 3.** The rules did not change, only where they run, and they are readable off the SQL: participation grouped by `("turnId", model)` so a duplicate answer counts once, a win where the vote points at that model's message, averages over `SUCCESS` only and null rather than zero when nothing was measured, ordered by wins then win rate then id.
+
+`tallyLeaderboard` and its eleven unit tests were deleted, not left beside the SQL as decoration. The coverage moved to `leaderboard-query.db.test.ts`, which asserts the same rules against the database that now enforces them.
+
+**Caching — not taken, and this is the result rather than a shortcut.** 316ms for a page nobody loads in a loop, at a data volume this app will not reach, does not justify a cache and the staleness that comes with it. The ladder says stop when the evidence stops, so it stops here. If the leaderboard ever becomes hot, the next rung is a cached aggregate, and the measurement above is the number to beat.
+
+**Pagination — reviewed, not needed.** At a realistic shape (10 threads per user) the sidebar is 0.19ms. It only became interesting at 20,000 threads for one person, which is not a user, it is a load test. Recorded as reviewed with the threshold named, rather than capped on a hunch.
+
 ### Additional DB review
 
 Inspect query patterns for:
@@ -1005,13 +1070,13 @@ Add indexes only when they correspond to real access patterns.
 
 Review whether long thread lists or large conversation histories should remain unbounded.
 
-- [ ] Establish performance baseline
-- [ ] Run EXPLAIN / query analysis
-- [ ] Review indexes against access patterns
-- [ ] Move aggregation toward SQL if justified
-- [ ] Add caching only if justified
-- [ ] Review pagination requirements
-- [ ] Record before/after measurements
+- [x] Establish performance baseline
+- [x] Run EXPLAIN / query analysis
+- [x] Review indexes against access patterns — two added, two measured and rejected
+- [x] Move aggregation toward SQL if justified — it was
+- [x] Add caching only if justified — it was not, and that is the result
+- [x] Review pagination requirements
+- [x] Record before/after measurements
 
 ---
 

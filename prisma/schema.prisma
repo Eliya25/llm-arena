@@ -26,6 +26,11 @@ model Thread {
   createdAt DateTime @default(now())
   user      User     @relation(fields: [userId], references: [id])
   turns     Turn[]
+
+  // The sidebar asks for one person's threads, newest first, on every page.
+  // Measured at 40,000 threads across 2,000 users: 5.02ms sequential scan
+  // without it, 0.19ms index scan with it (docs/scope-v2.md Feature 7).
+  @@index([userId, createdAt(sort: Desc)])
 }
 
 model Turn {
@@ -39,6 +44,11 @@ model Turn {
   messages  Message[]
   thread    Thread    @relation(fields: [threadId], references: [id])
   vote      Vote?
+
+  // Opening a thread reads its turns in order. Postgres does not index a
+  // foreign key on its own, so this was scanning every turn in the table to
+  // find five. Measured at 100,000 turns: 5.4ms before, 0.4ms after.
+  @@index([threadId, createdAt])
 }
 
 model Message {
