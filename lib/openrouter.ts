@@ -31,6 +31,31 @@ const AGENTIC_ONLY_MODELS = new Set([
   "thinkingmachines/inkling-small:free",
 ]);
 
+// The upstream catalog is sorted below by context size, which is useful in the
+// picker but a poor availability signal for the three automatic selections.
+// Keep a small, tested preference order and fall back to the live catalog when
+// OpenRouter removes one of them.
+const DEFAULT_MODEL_IDS = [
+  "minimax/minimax-m3:free",
+  "google/gemma-4-26b-a4b-it:free",
+  "nvidia/nemotron-3-super-120b-a12b:free",
+];
+
+export function selectDefaultModelIds(
+  catalog: readonly CatalogModel[],
+  limit: number,
+): string[] {
+  const available = new Set(catalog.map((model) => model.id));
+  const selected = DEFAULT_MODEL_IDS.filter((id) => available.has(id));
+
+  for (const model of catalog) {
+    if (selected.length >= limit) break;
+    if (!selected.includes(model.id)) selected.push(model.id);
+  }
+
+  return selected.slice(0, limit);
+}
+
 export function isArenaCompatibleModel(model: OpenRouterModel): boolean {
   if (AGENTIC_ONLY_MODELS.has(model.id)) return false;
 
