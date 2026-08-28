@@ -6,7 +6,7 @@ The repeatable harness and controlled upstream are implemented. An official Verc
 
 ## Environment
 
-The official run uses a Vercel Preview with its own PostgreSQL database, Clerk test users, Arcjet site and PostHog project. `LOAD_TEST_MODE=true` is allowed only outside the Vercel production environment. `OPENROUTER_CHAT_URL` points to `/api/load/mock-openrouter`; the chat route resolves that path against the current Preview origin before making its server request. `LOAD_TEST_SECRET` protects that endpoint.
+The official run uses a dedicated Vercel Preview with its own staging PostgreSQL database, Clerk test users, Arcjet site and PostHog project. Production is not required for Feature 8. `LOAD_TEST_MODE=true` is allowed only on this load Preview, and the route also refuses to enable it in a Vercel Production environment as a safety guard. `OPENROUTER_CHAT_URL` points to `/api/load/mock-openrouter`; the chat route resolves that path against the current Preview origin before making its server request. `LOAD_TEST_SECRET` protects that endpoint.
 
 The mock accepts prompt markers for deterministic behavior:
 
@@ -24,7 +24,7 @@ The mock accepts prompt markers for deterministic behavior:
 Create several Clerk staging sessions and keep their tokens outside the repository.
 
 ```bash
-LOAD_BASE_URL=https://preview.example \
+LOAD_BASE_URL=https://your-load-preview.vercel.app \
 LOAD_SHARED_PATH=/share/example \
 LOAD_MODEL_IDS=provider/model-a:free,provider/model-b:free,provider/model-c:free \
 LOAD_SESSION_TOKENS='["token-one","token-two"]' \

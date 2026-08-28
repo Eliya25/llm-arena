@@ -46,7 +46,7 @@ Before building a feature, state what you are doing and why, then wait for appro
 7. The browser is never authoritative for model output, lifecycle or metrics.
 8. Database tests require an isolated `TEST_DATABASE_URL` and may delete their own rows.
 9. No browser automation framework. Use automated tests for invisible correctness and `docs/manual-pass.md` for visible flows.
-10. After a change, run formatting, lint, type checking, tests and a production build.
+10. After a change, run formatting, lint, type checking, tests and an optimized build.
 
 ## Design
 
@@ -54,7 +54,7 @@ The visual system is recorded in `docs/scope.md`. Any UI work uses the installed
 
 ## Delivery
 
-GitHub Actions owns Vercel deployments. Migrations are reviewed SQL, applied with `prisma migrate deploy`, and must remain compatible with the previously deployed application. See `docs/runbook.md`.
+GitHub Actions owns the public Vercel Preview portfolio deployment. Migrations are reviewed SQL, applied to staging with `prisma migrate deploy`, and must remain compatible with the previously deployed Preview. A custom domain and Vercel Production are not required. See `docs/runbook.md`.
 
 ## Context files
 

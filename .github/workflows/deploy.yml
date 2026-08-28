@@ -50,9 +50,13 @@ jobs:
         run: echo "url=$(pnpm dlx vercel@59.7.0 deploy --prebuilt --token="$VERCEL_TOKEN")" >> "$GITHUB_OUTPUT"
         env: *preview-secrets
       - name: Smoke check preview
-        run: >-
-          curl --fail --retry 5 --retry-delay 3
-          -H "Authorization: Bearer $HEALTHCHECK_SECRET"
-          "${{ steps.deploy.outputs.url }}/api/health"
+        run: |
+          response="$(curl --fail --silent --show-error --retry 5 --retry-delay 3 \
+            -H "Authorization: Bearer $HEALTHCHECK_SECRET" \
+            "${{ steps.deploy.outputs.url }}/api/health")"
+          if [ "$response" != '{"status":"ok"}' ]; then
+            echo "Health check returned an unexpected response."
+            exit 1
+          fi
         env:
           HEALTHCHECK_SECRET: ${{ secrets.HEALTHCHECK_SECRET }}

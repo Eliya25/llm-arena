@@ -41,12 +41,12 @@ describe("selectDefaultModelIds", () => {
       catalogModel("unstable/huge:free"),
       catalogModel("nvidia/nemotron-3-super-120b-a12b:free"),
       catalogModel("minimax/minimax-m3:free"),
-      catalogModel("google/gemma-4-26b-a4b-it:free"),
+      catalogModel("inclusionai/ling-3.0-flash-fin:free"),
     ];
 
     expect(selectDefaultModelIds(catalog, 3)).toEqual([
       "minimax/minimax-m3:free",
-      "google/gemma-4-26b-a4b-it:free",
+      "inclusionai/ling-3.0-flash-fin:free",
       "nvidia/nemotron-3-super-120b-a12b:free",
     ]);
   });

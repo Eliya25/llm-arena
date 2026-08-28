@@ -68,7 +68,11 @@ GitHub Actions runs each quality gate. Database tests receive a fresh PostgreSQL
 
 ## Deployment
 
-GitHub Actions builds a Vercel artifact with a pinned CLI. Preview deployments use staging services. A production deployment applies backward compatible migrations, deploys the exact artifact that passed CI, then calls the protected database health check. A failed smoke check rolls the production alias back, never the database migration.
+GitHub Actions is the only deployment owner. After CI passes, it checks out the exact verified commit, applies compatible Prisma migrations to the staging database, builds with a pinned Vercel CLI and deploys the prebuilt artifact to Vercel Preview. A protected `/api/health` request verifies both the application and its database after deployment.
+
+The public portfolio demo intentionally runs as a `*.vercel.app` Preview deployment. It uses isolated staging services and Clerk development or test credentials, alongside staging PostgreSQL, Arcjet and PostHog configuration. A custom domain and a Clerk Production environment are not required for this portfolio target. This keeps the demo deployable at no domain cost while preserving CI gates, environment isolation, reviewed migrations and post deploy verification.
+
+There is no active Vercel Production deployment or production alias rollback workflow. Those would be separate future operating decisions if the project ever moved beyond its portfolio deployment model.
 
 Repository settings and required secrets are listed in [the operations runbook](docs/runbook.md). Capacity methodology and measured results live in [the capacity report](docs/capacity.md).
 
@@ -76,4 +80,4 @@ Repository settings and required secrets are listed in [the operations runbook](
 
 The system keeps synchronous independent streams because streaming is the product and no measured bottleneck has justified a queue. The leaderboard moved into one SQL aggregation after measurement showed that transferring every vote to Node was the actual cost. It deliberately has no cache yet because the measured query is acceptable and stale rankings would add complexity without evidence.
 
-Architecture decisions are recorded under [`docs/adr`](docs/adr). The V1 build record is [scope.md](docs/scope.md), and the production hardening record is [scope-v2.md](docs/scope-v2.md).
+Architecture decisions are recorded under [`docs/adr`](docs/adr). The V1 build record is [scope.md](docs/scope.md), and the V2 engineering hardening record is [scope-v2.md](docs/scope-v2.md).

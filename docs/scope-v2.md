@@ -1,4 +1,4 @@
-# Scope V2 — LLM Arena: Production & Resume Hardening
+# Scope V2 — LLM Arena: Engineering & Portfolio Hardening
 
 LLM Arena V1 proved the product.
 
@@ -61,13 +61,13 @@ The existing product behavior should remain intact while V2 hardens the implemen
 | 1   | Server-authoritative generation & metrics     | Trust & Correctness | P0       | complete    |
 | 2   | Idempotent persistence & lifecycle invariants | Trust & Correctness | P0       | complete    |
 | 3   | Reliability & failure policy                  | Reliability         | P0       | complete    |
-| 4   | Production observability & traceability       | Operations          | P1       | complete    |
+| 4   | Operational observability & traceability      | Operations          | P1       | complete    |
 | 5   | Automated test suite                          | Verification        | P1       | complete    |
 | 6   | Sharing lifecycle & data ownership            | Security / Product  | P1       | in progress |
 | 7   | Database & leaderboard scalability            | Performance         | P1       | complete    |
 | 8   | Load, concurrency & capacity verification     | Performance         | P1       | in progress |
 | 9   | CI/CD, migrations & deployment safety         | Delivery            | P1       | in progress |
-| 10  | Architecture documentation & production story | Resume / Operations | P2       | in progress |
+| 10  | Architecture documentation & portfolio story  | Resume / Operations | P2       | in progress |
 
 **Agreed order (2026-08-22).** Not the numbering. Trust and correctness first, then the ability to see and survive failure, then scale, then delivery:
 
@@ -601,11 +601,11 @@ The one gap worth naming rather than glossing: nothing automatically proves that
 
 # Phase 3 — Operations
 
-## 4. Production observability and traceability
+## 4. Operational observability and traceability
 
 ### Problem
 
-Product analytics exist, but debugging a production backend requires following one operation across components.
+Product analytics exist, but debugging a deployed backend requires following one operation across components.
 
 When a user reports:
 
@@ -728,7 +728,7 @@ Do not add another observability vendor simply to add a logo to the stack.
 - [x] Define correlation identifiers
 - [x] Add structured operational logs — `lib/telemetry.ts`
 - [x] Add generation lifecycle events
-- [x] Define key production metrics — `generation_finished` to PostHog
+- [x] Define key operational metrics — `generation_finished` to PostHog
 - [x] Ensure sensitive data is redacted — enforced by the logger, not by callers
 - [x] Verify one failed Arena turn can be reconstructed from telemetry — as a test, not once by hand
 
@@ -1090,7 +1090,7 @@ Review whether long thread lists or large conversation histories should remain u
 
 ### Goal
 
-Know where the current architecture breaks before calling it production-ready.
+Know where the current architecture breaks before claiming a measured capacity baseline.
 
 ### Scenarios
 
@@ -1140,7 +1140,7 @@ Exact numbers must come from measurement, not estimates.
 
 ### Harness built (2026-08-27)
 
-The repository now contains a controlled OpenRouter-compatible SSE endpoint and `pnpm load:capacity`. The endpoint is secret protected, only enabled by `LOAD_TEST_MODE`, and ignores that flag in the Vercel production environment. It can produce a healthy stream, controlled TTFT, truncation, stall, 429 or 500. The harness ramps concurrency for public reads and authenticated Arena streams and reports p50, p95, p99, TTFT, denial rate and internal error rate.
+The repository now contains a controlled OpenRouter-compatible SSE endpoint and `pnpm load:capacity`. The endpoint is secret protected, enabled only on the dedicated load Preview by `LOAD_TEST_MODE`, and also refuses that flag in a Vercel Production environment as a safety guard. It can produce a healthy stream, controlled TTFT, truncation, stall, 429 or 500. The harness ramps concurrency for public reads and authenticated Arena streams and reports p50, p95, p99, TTFT, denial rate and internal error rate.
 
 The official baseline is deliberately not filled in yet. It requires the dedicated load Preview, its staging identities and dashboard readings. `docs/capacity.md` records the exact environment, command and failure thresholds so that run produces a comparable result rather than an anecdote.
 
@@ -1161,7 +1161,7 @@ The official baseline is deliberately not filled in yet. It requires the dedicat
 
 ### Goal
 
-A change should not reach production merely because it works on one developer machine.
+Ship safely to a public Vercel Preview portfolio deployment. A change reaches that deployment only after automated quality gates pass against the exact commit being deployed.
 
 ### Pull-request pipeline
 
@@ -1172,7 +1172,7 @@ Automatically run:
 - TypeScript check
 - unit tests
 - integration tests where practical
-- production build
+- optimized application build
 
 No merge should silently bypass failing required checks.
 
@@ -1195,10 +1195,11 @@ Keep explicit separation between:
 
 - local development
 - test
-- preview/staging if used
-- production
+- the portfolio Preview and its isolated staging services
 
 Secrets must never enter the repository.
+
+The selected V2 deployment target is a public `*.vercel.app` Preview using Clerk development or test credentials. A custom domain, Clerk Production instance and Vercel Production job are intentionally outside the completion requirement.
 
 ### Deployment verification
 
@@ -1218,11 +1219,13 @@ Document how to respond when:
 
 - database becomes unavailable
 
-### Built so far (2026-08-27)
+### Built and verified so far (2026-08-28)
 
-`.gitattributes` pins text to LF and removes the recurring Windows-only Prettier noise. CI has separate format, lint, typecheck, unit, database and production-build jobs. The database job starts PostgreSQL 17, applies every migration and never touches the shared hosted test instance.
+`.gitattributes` pins text to LF and removes the recurring Windows-only Prettier noise. CI has separate format, lint, typecheck, unit, database and optimized-build jobs. The database job starts PostgreSQL 17, applies every migration and never touches the shared hosted test instance.
 
-GitHub Actions is the single deployment owner. A successful internal PR run builds and deploys a Vercel Preview against staging. A successful `main` run builds one production artifact, applies compatible migrations, deploys that artifact and calls a secret-protected database health endpoint. A failed production smoke check rolls the Vercel alias back. `docs/runbook.md` records environment boundaries, expand/migrate/contract, recovery and required repository settings. GitHub environment secrets, production approval and required checks still have to be enabled in the repository UI.
+GitHub Actions is the single deployment owner. A successful internal PR or `main` CI run checks out the exact passing commit, applies compatible migrations through `prisma migrate deploy`, builds with Vercel CLI `59.7.0` and deploys the prebuilt artifact to the Preview environment with staging credentials. Successful CI and Deploy runs for the current `main` commit prove that this path executes end to end.
+
+Feature 9 remains in progress for two measured reasons. GitHub reports that `main` is not protected, so the six CI jobs are not yet required checks. The current Preview returns `302` to Vercel SSO for an anonymous request, so it is not yet the public portfolio URL described by the decision. The current smoke command also accepts that redirect as success and prints `Redirecting...`; it must assert the health route's exact `{"status":"ok"}` response after Preview protection is disabled.
 
 - [x] Add CI workflow
 
@@ -1238,11 +1241,15 @@ GitHub Actions is the single deployment owner. A successful internal PR run buil
 
 - [x] Document rollback/recovery path
 
+- [ ] Make the portfolio Preview public in Vercel Deployment Protection
+
+- [ ] Verify the corrected smoke assertion against the public Preview
+
 ---
 
 # Phase 8 — Architecture and Resume Story
 
-## 10. Architecture documentation and production story
+## 10. Architecture documentation and portfolio story
 
 The finished project should be understandable without reading every source file.
 
@@ -1261,7 +1268,7 @@ The repository README should clearly explain:
 - observability
 - how to run locally
 - how to test
-- production deployment
+- portfolio Preview deployment
 - important tradeoffs
 
 ### Architecture diagram
@@ -1351,7 +1358,7 @@ By the end of V2, the project should support serious discussion of:
 
 - CI/CD
 
-- production tradeoffs
+- portfolio deployment tradeoffs
 
 - LLM integration
 
@@ -1359,7 +1366,7 @@ By the end of V2, the project should support serious discussion of:
 
 The README now explains the real request path, trust boundary, lifecycle, sharing, protection, verification, deployment and measured database tradeoffs. Its Mermaid diagram reflects the current monolith rather than an aspirational service split. Seven short ADRs capture the interview-worthy decisions, and the runbook plus capacity report cover operating and measuring the deployed system. `AGENTS.md` is canonical for every tool and `CLAUDE.md` is only its import pointer.
 
-The final documentation verification and the capacity figures remain open until the migration, staging deployment, manual browser pass and load run happen.
+The staging deployment and migrations now run through GitHub Actions. Final documentation verification remains open until the public Preview setting and corrected smoke check are verified. Capacity figures remain open until the dedicated load run happens.
 
 - [x] Rewrite README around the completed architecture
 
@@ -1409,12 +1416,12 @@ LLM Arena V2 is complete when:
 1. The backend, not the browser, owns persisted model output and metrics.
 2. Streaming retries and duplicate operations cannot corrupt persisted state.
 3. Failure and retry behavior is explicitly defined and verified.
-4. A production incident can be traced through structured telemetry.
+4. An incident in the deployed portfolio environment can be traced through structured telemetry.
 5. Critical behavior is protected by automated tests.
 6. Public sharing has a deliberate data lifecycle.
 7. Database performance has been measured and optimized only where necessary.
 8. Concurrency/load behavior has a documented baseline.
-9. Pull requests and deployments pass automated quality gates.
+9. Pull requests and the public Vercel Preview deployment pass automated quality gates and a real protected health check.
 10. The repository clearly explains the final architecture and its tradeoffs.
 
 At that point, stop expanding LLM Arena merely to keep working on it.
