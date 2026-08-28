@@ -23,7 +23,7 @@ Concrete, checkable version of the Rules section in `CLAUDE.md`. If something he
 
 Either step failing blocks the commit. The hook also defensively adds `C:\Windows\System32` to `PATH` before running anything — lint-staged spawns `eslint.cmd`/`prettier.cmd` through `cmd.exe` on Windows, and some shells (this one included) don't carry System32 on `PATH` by default, which makes that spawn fail outright with `ENOENT` before eslint/prettier ever run. Without this line the hook blocks every commit for the wrong reason instead of actually linting.
 
-No test runner is wired in — per `CLAUDE.md`, this project verifies manually (dev server, browser, `curl`), not via an automated suite.
+Vitest has separate unit and database projects. Unit tests cover pure behavior. Database tests exercise real PostgreSQL constraints, races and lifecycle rules against an isolated `TEST_DATABASE_URL`. Visible flows still use the manual browser pass.
 
 ## Naming & structure
 
@@ -64,4 +64,4 @@ No test runner is wired in — per `CLAUDE.md`, this project verifies manually (
 
 ## Before calling anything done
 
-Per `CLAUDE.md`: after building or changing anything, actually run `pnpm typecheck`, `pnpm lint`, and `pnpm build` — not just read the code and assume it's right. Fix whatever fails before calling the step done.
+After building or changing anything, run `pnpm format:check`, `pnpm typecheck`, `pnpm lint`, the relevant Vitest projects and `pnpm build`. Fix failures before calling the step done.

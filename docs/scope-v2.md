@@ -63,11 +63,11 @@ The existing product behavior should remain intact while V2 hardens the implemen
 | 3   | Reliability & failure policy                  | Reliability         | P0       | complete    |
 | 4   | Production observability & traceability       | Operations          | P1       | complete    |
 | 5   | Automated test suite                          | Verification        | P1       | complete    |
-| 6   | Sharing lifecycle & data ownership            | Security / Product  | P1       | not started |
+| 6   | Sharing lifecycle & data ownership            | Security / Product  | P1       | in progress |
 | 7   | Database & leaderboard scalability            | Performance         | P1       | complete    |
-| 8   | Load, concurrency & capacity verification     | Performance         | P1       | not started |
-| 9   | CI/CD, migrations & deployment safety         | Delivery            | P1       | not started |
-| 10  | Architecture documentation & production story | Resume / Operations | P2       | not started |
+| 8   | Load, concurrency & capacity verification     | Performance         | P1       | in progress |
+| 9   | CI/CD, migrations & deployment safety         | Delivery            | P1       | in progress |
+| 10  | Architecture documentation & production story | Resume / Operations | P2       | in progress |
 
 **Agreed order (2026-08-22).** Not the numbering. Trust and correctness first, then the ability to see and survive failure, then scale, then delivery:
 
@@ -855,7 +855,7 @@ Three extractions made that possible, and each is worth having on its own:
 
 Notable tests, in the sense of "this would have caught something real": the reasoning-model rate (829 tokens over 49 characters must read 135 tok/s, not 3152), a role-only opening frame not counting as a first token, an SSE line split mid-JSON across two chunks, a reported zero staying zero instead of falling back to null, and history trimming that strands an answer whose question was cut off.
 
-**The database half (2026-08-22).** A second Prisma Postgres instance, reached through `TEST_DATABASE_URL`. **73 tests pass** — 49 unit in 175ms, 24 against the database in about 65 seconds.
+**The database half (2026-08-22).** A second Prisma Postgres instance, reached through `TEST_DATABASE_URL`. The suite now contains **149 passing cases: 89 unit and 60 database tests**. The database project was verified from an empty PostgreSQL 17 container after all eight migrations, the same isolation used by CI. The older hosted test URL is pooled and cannot run Prisma Migrate without its provider direct URL, which is why CI no longer depends on that shared instance.
 
 Two suites, declared as separate Vitest projects rather than separated by convention. `unit` has no setup file, so a unit test cannot quietly start needing a database without moving to a `.db.test.ts` file first. `database` runs with `fileParallelism: false`, since rows are shared state and parallel files would race each other's counts.
 
@@ -920,12 +920,18 @@ Review `/leaderboard` as another anonymous database-backed surface.
 
 If measurements show the query is expensive enough to abuse, give it an appropriate read protection strategy rather than copying another rate limit blindly.
 
-- [ ] Define thread visibility lifecycle
-- [ ] Implement revoke/unshare behavior if selected
-- [ ] Verify unauthorized mutation attempts
-- [ ] Review public metadata exposure
+### Built so far (2026-08-27)
+
+Threads are now private by default. Owner reads stay on `/arena/{threadId}` and are scoped by Clerk identity in the database query. Public reads moved to `/share/{token}`. The raw 256 bit token is returned once, only its SHA 256 hash is stored, and every public page requires an active, non-revoked `ThreadShare`. Sharing again rotates the token. Unshare revokes it. Delete is owner scoped and cascades through the thread's turns, messages, votes and share row.
+
+The public route keeps the existing Arcjet read protection, renders read only and publishes generic `noindex` metadata. The owner UI now exposes the lifecycle explicitly in one dialog, including a separate permanent-delete confirmation. Unit and database tests cover token shape, rotation, revocation, cascade and unauthorized mutation attempts. The migration is committed but still needs a provider direct URL before it can be applied to the existing pooled hosted test instance. The manual browser pass remains open.
+
+- [x] Define thread visibility lifecycle
+- [x] Implement revoke/unshare behavior if selected
+- [x] Verify unauthorized mutation attempts
+- [x] Review public metadata exposure
 - [ ] Review leaderboard abuse surface
-- [ ] Document public-data guarantees
+- [x] Document public-data guarantees
 
 ---
 
@@ -1132,7 +1138,13 @@ before p95 latency or error rate crosses the chosen limit.
 
 Exact numbers must come from measurement, not estimates.
 
-- [ ] Define representative load scenarios
+### Harness built (2026-08-27)
+
+The repository now contains a controlled OpenRouter-compatible SSE endpoint and `pnpm load:capacity`. The endpoint is secret protected, only enabled by `LOAD_TEST_MODE`, and ignores that flag in the Vercel production environment. It can produce a healthy stream, controlled TTFT, truncation, stall, 429 or 500. The harness ramps concurrency for public reads and authenticated Arena streams and reports p50, p95, p99, TTFT, denial rate and internal error rate.
+
+The official baseline is deliberately not filled in yet. It requires the dedicated load Preview, its staging identities and dashboard readings. `docs/capacity.md` records the exact environment, command and failure thresholds so that run produces a comparable result rather than an anecdote.
+
+- [x] Define representative load scenarios
 - [ ] Establish baseline
 - [ ] Test concurrent streaming
 - [ ] Test burst behavior
@@ -1206,19 +1218,25 @@ Document how to respond when:
 
 - database becomes unavailable
 
-- [ ] Add CI workflow
+### Built so far (2026-08-27)
+
+`.gitattributes` pins text to LF and removes the recurring Windows-only Prettier noise. CI has separate format, lint, typecheck, unit, database and production-build jobs. The database job starts PostgreSQL 17, applies every migration and never touches the shared hosted test instance.
+
+GitHub Actions is the single deployment owner. A successful internal PR run builds and deploys a Vercel Preview against staging. A successful `main` run builds one production artifact, applies compatible migrations, deploys that artifact and calls a secret-protected database health endpoint. A failed production smoke check rolls the Vercel alias back. `docs/runbook.md` records environment boundaries, expand/migrate/contract, recovery and required repository settings. GitHub environment secrets, production approval and required checks still have to be enabled in the repository UI.
+
+- [x] Add CI workflow
 
 - [ ] Require critical checks
 
-- [ ] Add automated tests to CI
+- [x] Add automated tests to CI
 
-- [ ] Define migration workflow
+- [x] Define migration workflow
 
-- [ ] Define environment boundaries
+- [x] Define environment boundaries
 
-- [ ] Add post-deploy smoke verification
+- [x] Add post-deploy smoke verification
 
-- [ ] Document rollback/recovery path
+- [x] Document rollback/recovery path
 
 ---
 
@@ -1337,17 +1355,23 @@ By the end of V2, the project should support serious discussion of:
 
 - LLM integration
 
-- [ ] Rewrite README around the completed architecture
+### Written so far (2026-08-27)
 
-- [ ] Add architecture diagram
+The README now explains the real request path, trust boundary, lifecycle, sharing, protection, verification, deployment and measured database tradeoffs. Its Mermaid diagram reflects the current monolith rather than an aspirational service split. Seven short ADRs capture the interview-worthy decisions, and the runbook plus capacity report cover operating and measuring the deployed system. `AGENTS.md` is canonical for every tool and `CLAUDE.md` is only its import pointer.
 
-- [ ] Add selected ADRs
+The final documentation verification and the capacity figures remain open until the migration, staging deployment, manual browser pass and load run happen.
 
-- [ ] Add setup/testing/deployment documentation
+- [x] Rewrite README around the completed architecture
+
+- [x] Add architecture diagram
+
+- [x] Add selected ADRs
+
+- [x] Add setup/testing/deployment documentation
 
 - [ ] Verify documentation matches reality
 
-- [ ] Prepare concise project explanation for interviews
+- [x] Prepare concise project explanation for interviews
 
 ---
 

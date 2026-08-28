@@ -26,6 +26,7 @@ model Thread {
   createdAt DateTime @default(now())
   user      User     @relation(fields: [userId], references: [id])
   turns     Turn[]
+  share     ThreadShare?
 
   // The sidebar asks for one person's threads, newest first, on every page.
   // Measured at 40,000 threads across 2,000 users: 5.02ms sequential scan
@@ -42,7 +43,7 @@ model Turn {
   clientKey String?   @unique
   createdAt DateTime  @default(now())
   messages  Message[]
-  thread    Thread    @relation(fields: [threadId], references: [id])
+  thread    Thread    @relation(fields: [threadId], references: [id], onDelete: Cascade)
   vote      Vote?
 
   // Opening a thread reads its turns in order. Postgres does not index a
@@ -87,7 +88,7 @@ model Message {
   inputTokens          Int?
   outputTokens         Int?
   createdAt            DateTime @default(now())
-  turn                 Turn     @relation(fields: [turnId], references: [id])
+  turn                 Turn     @relation(fields: [turnId], references: [id], onDelete: Cascade)
   votes                Vote[]
 
   // One model answers one turn once. A retry rewrites its row instead of
@@ -101,8 +102,17 @@ model Vote {
   turnId    String   @unique
   messageId String
   createdAt DateTime @default(now())
-  message   Message  @relation(fields: [messageId], references: [id])
-  turn      Turn     @relation(fields: [turnId], references: [id])
+  message   Message  @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  turn      Turn     @relation(fields: [turnId], references: [id], onDelete: Cascade)
+}
+
+model ThreadShare {
+  id        String    @id @default(cuid())
+  threadId  String    @unique
+  tokenHash String    @unique
+  createdAt DateTime  @default(now())
+  revokedAt DateTime?
+  thread    Thread    @relation(fields: [threadId], references: [id], onDelete: Cascade)
 }
 
 enum MessageStatus {

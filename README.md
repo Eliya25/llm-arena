@@ -1,60 +1,79 @@
 # LLM Arena
 
-Send one prompt to up to three AI models at once, watch them answer side by
-side, and vote for the best one. Real votes and real per-call measurements
-build a leaderboard of which model is actually worth using.
+LLM Arena sends one prompt to up to three free AI models, streams their answers independently, and lets the user vote for the best response. Persisted server measurements and real votes build global and personal leaderboards.
 
-Every model is free tier, so cost always reads `$0.0000`. That is a real
-measured number, not a placeholder, and it is shown for that reason.
+V1 proves the product. V2 hardens the backend around trust, concurrency, failure, observability, verification, data lifecycle, database performance and delivery.
 
-> **Status:** V1 is complete and working. V2 — hardening the backend that sits
-> underneath it — is in progress. See `docs/scope-v2.md` for what is done and
-> what is open. A full architecture write-up is the last thing V2 does, once
-> the decisions it would describe have actually been made.
+## Architecture
+
+```mermaid
+flowchart TD
+  User[Browser] --> Clerk[Clerk authentication]
+  Clerk --> Arcjet[Arcjet policy for the requested surface]
+  Arcjet --> Route[Next.js Arena backend]
+  Route --> A[Model stream A]
+  Route --> B[Model stream B]
+  Route --> C[Model stream C]
+  A --> Recorder[Server recorder]
+  B --> Recorder
+  C --> Recorder
+  Recorder --> DB[(PostgreSQL)]
+  DB --> Threads[Private and shared threads]
+  DB --> Board[SQL leaderboard]
+  Route --> Logs[Structured logs]
+  Recorder --> PostHog[PostHog analytics]
+```
+
+Each model has its own HTTP request and SSE stream. One slow or failed model does not hold the other lanes open. The server claims the thread, turn and message row before calling OpenRouter, records checkpoints while reading the upstream stream, and sends a final authoritative metrics frame to the browser.
+
+The browser can display live estimates but cannot choose persisted answer content, status, TTFT, token counts or speed. Retries reuse one message row and increment its attempt number, so a stale stream cannot overwrite a newer attempt.
+
+## Privacy and sharing
+
+Threads are private by default. `/arena/{threadId}` is owner only. Sharing creates a 256 bit token and stores only its SHA 256 hash. The public `/share/{token}` page is read only and marked `noindex`. Unshare revokes the copied URL immediately, sharing again rotates it, and thread deletion cascades through its turns, messages, votes and share record.
+
+## Protection and operations
+
+Clerk owns identity. Every mutation checks ownership on the server. Arcjet uses separate limits and policies for model inference, writes and anonymous public reads. Structured logs carry request, thread, turn, message, model and attempt correlation fields. PostHog receives product events and model measurements, but analytics failures never fail a generation.
 
 ## Stack
 
-Next.js App Router · TypeScript · PostgreSQL + Prisma · Clerk · OpenRouter ·
-Arcjet · PostHog · Vitest
+Next.js 16 App Router, React 19, TypeScript, PostgreSQL, Prisma 7, Clerk, OpenRouter, Arcjet, PostHog, Tailwind CSS 4 and Vitest.
 
-## Running it
+## Local setup
 
-Needs Node 20+ and pnpm.
+Use Node 20 or newer and pnpm 11.
 
 ```bash
 pnpm install
-cp .env.example .env.local     # then fill it in
+cp .env.example .env.local
 pnpm prisma migrate deploy
 pnpm dev
 ```
 
-Every variable in `.env.example` is required — the app fails at startup on a
-missing one rather than halfway through a request. `TEST_DATABASE_URL` is the
-exception: only the test suite reads it, and it must point at a **different**
-database from `DATABASE_URL`.
+Fill every application variable in `.env.example`. `TEST_DATABASE_URL` must point at a database different from `DATABASE_URL`. Database tests create and delete rows and refuse to run when the two URLs match.
 
-## Checking it
+## Verification
 
 ```bash
-pnpm test         # everything
-pnpm test:unit    # the fast half — no database, no environment needed
-pnpm typecheck
+pnpm format:check
 pnpm lint
+pnpm typecheck
+pnpm test:unit
+pnpm test:db
 pnpm build
 ```
 
-Tests cover what a person cannot see: concurrency, stale writes, streaming
-lifecycle, metric definitions. Everything visible is verified by hand against
-a real browser, using the list in `docs/manual-pass.md`.
+GitHub Actions runs each quality gate. Database tests receive a fresh PostgreSQL service container and apply committed migrations before Vitest starts. Visible behavior is still checked using [the manual browser pass](docs/manual-pass.md).
 
-## The documentation that matters
+## Deployment
 
-| file                  | what it holds                                                           |
-| --------------------- | ----------------------------------------------------------------------- |
-| `docs/scope.md`       | V1 — every feature, the decision behind it, and how it was verified     |
-| `docs/scope-v2.md`    | V2 — the hardening work, including what turned out to be wrong          |
-| `docs/manual-pass.md` | the browser checks, written down so they mean the same thing every time |
-| `CLAUDE.md`           | how this project is built and what it refuses to do                     |
+GitHub Actions builds a Vercel artifact with a pinned CLI. Preview deployments use staging services. A production deployment applies backward compatible migrations, deploys the exact artifact that passed CI, then calls the protected database health check. A failed smoke check rolls the production alias back, never the database migration.
 
-These are the real record. They are written to be read by someone picking the
-project up cold, including the parts that did not go to plan.
+Repository settings and required secrets are listed in [the operations runbook](docs/runbook.md). Capacity methodology and measured results live in [the capacity report](docs/capacity.md).
+
+## Important tradeoffs
+
+The system keeps synchronous independent streams because streaming is the product and no measured bottleneck has justified a queue. The leaderboard moved into one SQL aggregation after measurement showed that transferring every vote to Node was the actual cost. It deliberately has no cache yet because the measured query is acceptable and stale rankings would add complexity without evidence.
+
+Architecture decisions are recorded under [`docs/adr`](docs/adr). The V1 build record is [scope.md](docs/scope.md), and the production hardening record is [scope-v2.md](docs/scope-v2.md).

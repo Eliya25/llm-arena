@@ -2,11 +2,17 @@
 
 import { auth } from "@clerk/nextjs/server";
 import { request as arcjetRequest } from "@arcjet/next";
+import { revalidatePath } from "next/cache";
 import { ajActions } from "@/lib/arcjet";
 import { prisma } from "@/lib/prisma";
 import { track } from "@/lib/analytics";
 import { describeCause, log, newRequestId } from "@/lib/telemetry";
 import { judgeVote } from "./vote-rules";
+import {
+  createShareForOwner,
+  deleteThreadForOwner,
+  revokeShareForOwner,
+} from "./thread-lifecycle";
 
 const SIGN_IN_ERROR = "Please sign in to do that.";
 const GENERIC_ERROR = "Something went wrong saving this. Please try again.";
@@ -24,6 +30,7 @@ type ActionError = { error: string };
 type Authorized = { user: { id: string; clerkId: string } };
 
 export type ThreadListItem = { id: string; title: string };
+export type ShareResult = { ok: true; path: string } | ActionError;
 
 // The sidebar's thread list. Returns [] rather than an error shape — a list
 // that can't load (signed out, database down) just renders as empty, and the
@@ -145,6 +152,67 @@ export async function castVote(input: {
       { cause: describeCause(cause) },
     );
     // The @unique on turnId means a double-vote lands here, not silently.
+    return { error: GENERIC_ERROR };
+  }
+}
+
+export async function shareThread(threadId: string): Promise<ShareResult> {
+  try {
+    const authorized = await authorize(COST_SINGLE_WRITE);
+    if ("error" in authorized) return authorized;
+    const token = await createShareForOwner(authorized.user.id, threadId);
+    if (!token) return { error: GENERIC_ERROR };
+    revalidatePath(`/arena/${threadId}`);
+    return { ok: true, path: `/share/${token}` };
+  } catch (cause) {
+    log.error(
+      "thread_share_failed",
+      { requestId: newRequestId(), threadId },
+      { cause: describeCause(cause) },
+    );
+    return { error: GENERIC_ERROR };
+  }
+}
+
+export async function unshareThread(
+  threadId: string,
+): Promise<{ ok: true } | ActionError> {
+  try {
+    const authorized = await authorize(COST_SINGLE_WRITE);
+    if ("error" in authorized) return authorized;
+    if (!(await revokeShareForOwner(authorized.user.id, threadId))) {
+      return { error: GENERIC_ERROR };
+    }
+    revalidatePath(`/arena/${threadId}`);
+    return { ok: true };
+  } catch (cause) {
+    log.error(
+      "thread_unshare_failed",
+      { requestId: newRequestId(), threadId },
+      { cause: describeCause(cause) },
+    );
+    return { error: GENERIC_ERROR };
+  }
+}
+
+export async function deleteThread(
+  threadId: string,
+): Promise<{ ok: true } | ActionError> {
+  try {
+    const authorized = await authorize(COST_SINGLE_WRITE);
+    if ("error" in authorized) return authorized;
+    if (!(await deleteThreadForOwner(authorized.user.id, threadId))) {
+      return { error: GENERIC_ERROR };
+    }
+
+    revalidatePath("/arena");
+    return { ok: true };
+  } catch (cause) {
+    log.error(
+      "thread_delete_failed",
+      { requestId: newRequestId(), threadId },
+      { cause: describeCause(cause) },
+    );
     return { error: GENERIC_ERROR };
   }
 }

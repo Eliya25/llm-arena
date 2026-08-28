@@ -60,9 +60,18 @@ reloading a page mid-answer. The list is not a formality.
 
 ## Sharing
 
-- [ ] **A shared link renders signed out**, with the same answers and real
-      metrics, and with no "Pick as winner" buttons anywhere.
-- [ ] **A made-up thread id lands on not-found,** not on an error screen.
+- [ ] **A thread starts private.** Its `/arena/{id}` URL lands on not-found for
+      another account and when signed out.
+- [ ] **Create share link makes a new `/share/{token}` URL.** It renders signed
+      out with the same answers and real metrics, with no mutation controls.
+- [ ] **Unshare revokes a copied URL immediately.** Sharing again creates a
+      different URL and the old one stays revoked.
+- [ ] **Shared metadata is generic and noindex.** It does not contain the
+      thread title, prompt or answer text.
+- [ ] **Delete asks twice, then removes the thread.** Its owner URL and shared
+      URL both land on not-found afterwards.
+- [ ] **Made-up thread ids and share tokens land on not-found,** not on an
+      error screen.
 
 ## Failure
 
