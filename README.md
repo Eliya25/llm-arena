@@ -66,6 +66,10 @@ pnpm build
 
 GitHub Actions runs each quality gate. Database tests receive a fresh PostgreSQL service container and apply committed migrations before Vitest starts. Visible behavior is still checked using [the manual browser pass](docs/manual-pass.md).
 
+## Current deployment
+
+The public portfolio deployment is a Vercel Preview at [llm-arena-yuc3htahf-eliyacohen2019-5505s-projects.vercel.app](https://llm-arena-yuc3htahf-eliyacohen2019-5505s-projects.vercel.app). It is intentionally a demonstration environment, not a claim of production scale. Free OpenRouter models can be temporarily busy or rate limited, and one failed lane does not fail the other model streams.
+
 ## Deployment
 
 GitHub Actions is the only deployment owner. After CI passes, it checks out the exact verified commit, applies compatible Prisma migrations to the staging database, builds with a pinned Vercel CLI and deploys the prebuilt artifact to Vercel Preview. A protected `/api/health` request verifies both the application and its database after deployment.
@@ -79,5 +83,13 @@ Repository settings and required secrets are listed in [the operations runbook](
 ## Important tradeoffs
 
 The system keeps synchronous independent streams because streaming is the product and no measured bottleneck has justified a queue. The leaderboard moved into one SQL aggregation after measurement showed that transferring every vote to Node was the actual cost. It deliberately has no cache yet because the measured query is acceptable and stale rankings would add complexity without evidence.
+
+## Known limitations and future improvements
+
+Abandoned generation cleanup currently uses message age through `createdAt`. A future maintenance change could use an explicit heartbeat or lease such as `lastActivityAt` or `leaseExpiresAt` when measured workloads justify the additional writes and lifecycle state.
+
+Conversation history sent to a model is assembled by the client from the visible thread state. Rebuilding that history on the server from persisted turns would strengthen the trust boundary, but no current correctness failure justifies adding it during V2 closure.
+
+The free OpenRouter catalog is operationally variable. A model can return a transient `429` or provider busy response even when it appears in the live catalog. The Arena treats this as a per lane failure, keeps successful lanes usable and offers an explicit retry.
 
 Architecture decisions are recorded under [`docs/adr`](docs/adr). The V1 build record is [scope.md](docs/scope.md), and the V2 engineering hardening record is [scope-v2.md](docs/scope-v2.md).

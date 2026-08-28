@@ -2,7 +2,7 @@
 
 ## Status
 
-The repeatable harness and controlled upstream are implemented. An official Vercel capacity number is still pending because it must be run against the dedicated load Preview with staging credentials. No result is claimed before that run.
+The repeatable harness and controlled upstream are implemented. The closure pass on 2026-08-28 confirmed that the normal portfolio Preview does not contain the load only configuration and the local environment does not contain dedicated Clerk load sessions. The official Vercel capacity number therefore remains pending. No result is claimed before that run.
 
 ## Environment
 
@@ -46,4 +46,13 @@ Arcjet denials are recorded separately and are expected when the burst scenario 
 
 ## Result
 
-Pending the dedicated Preview run. Record the first failing concurrency level, the first measured bottleneck, and any before and after change here. Do not add a queue, cache or another service unless this evidence calls for it.
+Pending the dedicated Preview run. The current environment is missing all of the following inputs required for an official run:
+
+1. A dedicated Vercel Preview with `LOAD_TEST_MODE=true`.
+2. A random `LOAD_TEST_SECRET` and `OPENROUTER_CHAT_URL=/api/load/mock-openrouter` configured only on that Preview.
+3. A public shared thread path seeded in the load database.
+4. Three distinct mock model IDs accepted by the application catalog for that Preview.
+5. One or more saved Clerk staging session tokens in `LOAD_SESSION_TOKENS`.
+6. The dedicated Preview URL in `LOAD_BASE_URL`.
+
+Once supplied, run the existing concurrency ramp and record the first failing level, the first measured bottleneck and the Vercel, database and Arcjet observations. Do not add a queue, cache or another service unless this evidence calls for it.

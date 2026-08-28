@@ -63,11 +63,11 @@ The existing product behavior should remain intact while V2 hardens the implemen
 | 3   | Reliability & failure policy                  | Reliability         | P0       | complete    |
 | 4   | Operational observability & traceability      | Operations          | P1       | complete    |
 | 5   | Automated test suite                          | Verification        | P1       | complete    |
-| 6   | Sharing lifecycle & data ownership            | Security / Product  | P1       | in progress |
+| 6   | Sharing lifecycle & data ownership            | Security / Product  | P1       | complete    |
 | 7   | Database & leaderboard scalability            | Performance         | P1       | complete    |
 | 8   | Load, concurrency & capacity verification     | Performance         | P1       | in progress |
 | 9   | CI/CD, migrations & deployment safety         | Delivery            | P1       | in progress |
-| 10  | Architecture documentation & portfolio story  | Resume / Operations | P2       | in progress |
+| 10  | Architecture documentation & portfolio story  | Resume / Operations | P2       | complete    |
 
 **Agreed order (2026-08-22).** Not the numbering. Trust and correctness first, then the ability to see and survive failure, then scale, then delivery:
 
@@ -880,7 +880,7 @@ Protect important behavior.
 - [x] Cover streaming lifecycle
 - [x] Cover concurrency regressions
 - [x] Manual pass list written (`docs/manual-pass.md`), replacing automated E2E — **dropped**, conflicts with the retained browser-automation ban; replaced by a written manual pass list
-- [ ] Run the suite in CI
+- [x] Run the suite in CI
 
 ---
 
@@ -924,13 +924,15 @@ If measurements show the query is expensive enough to abuse, give it an appropri
 
 Threads are now private by default. Owner reads stay on `/arena/{threadId}` and are scoped by Clerk identity in the database query. Public reads moved to `/share/{token}`. The raw 256 bit token is returned once, only its SHA 256 hash is stored, and every public page requires an active, non-revoked `ThreadShare`. Sharing again rotates the token. Unshare revokes it. Delete is owner scoped and cascades through the thread's turns, messages, votes and share row.
 
-The public route keeps the existing Arcjet read protection, renders read only and publishes generic `noindex` metadata. The owner UI now exposes the lifecycle explicitly in one dialog, including a separate permanent-delete confirmation. Unit and database tests cover token shape, rotation, revocation, cascade and unauthorized mutation attempts. The migration is committed but still needs a provider direct URL before it can be applied to the existing pooled hosted test instance. The manual browser pass remains open.
+The public route keeps the existing Arcjet read protection, renders read only and publishes generic `noindex` metadata. The owner UI exposes the lifecycle explicitly in one dialog, including a separate permanent-delete confirmation. Unit and database tests cover token shape, rotation, revocation, cascade and unauthorized mutation attempts. CI applies the migration to an isolated PostgreSQL service, and the Preview workflow applies it to the staging database before deployment.
+
+The anonymous `/leaderboard` surface was reviewed against the measured query rather than given a copied limiter. At 100,000 turns the SQL aggregation returns three rows in 316ms, the portfolio deployment is not a high traffic service, and the page performs no mutation or provider call. An additional limiter or cache is not justified by the measured cost or current risk. If traffic ever makes this route hot, the existing 316ms baseline is the threshold to re-evaluate a cached aggregate or a dedicated read policy.
 
 - [x] Define thread visibility lifecycle
 - [x] Implement revoke/unshare behavior if selected
 - [x] Verify unauthorized mutation attempts
 - [x] Review public metadata exposure
-- [ ] Review leaderboard abuse surface
+- [x] Review leaderboard abuse surface
 - [x] Document public-data guarantees
 
 ---
@@ -1225,7 +1227,7 @@ Document how to respond when:
 
 GitHub Actions is the single deployment owner. A successful internal PR or `main` CI run checks out the exact passing commit, applies compatible migrations through `prisma migrate deploy`, builds with Vercel CLI `59.7.0` and deploys the prebuilt artifact to the Preview environment with staging credentials. Successful CI and Deploy runs for the current `main` commit prove that this path executes end to end.
 
-Feature 9 remains in progress for two measured reasons. GitHub reports that `main` is not protected, so the six CI jobs are not yet required checks. The current Preview returns `302` to Vercel SSO for an anonymous request, so it is not yet the public portfolio URL described by the decision. The current smoke command also accepts that redirect as success and prints `Redirecting...`; it must assert the health route's exact `{"status":"ok"}` response after Preview protection is disabled.
+Feature 9 remains in progress for one repository setting. GitHub reports that `main` is not protected, so the six CI jobs are not yet required checks. Everything else is proven on commit `99e23ed`: all six CI jobs passed, the exact commit was built and deployed, `prisma migrate deploy` ran against staging, the public Preview is anonymously reachable, and the corrected smoke step required the protected route's exact `{"status":"ok"}` response.
 
 - [x] Add CI workflow
 
@@ -1241,9 +1243,9 @@ Feature 9 remains in progress for two measured reasons. GitHub reports that `mai
 
 - [x] Document rollback/recovery path
 
-- [ ] Make the portfolio Preview public in Vercel Deployment Protection
+- [x] Make the portfolio Preview public in Vercel Deployment Protection
 
-- [ ] Verify the corrected smoke assertion against the public Preview
+- [x] Verify the corrected smoke assertion against the public Preview
 
 ---
 
@@ -1366,7 +1368,7 @@ By the end of V2, the project should support serious discussion of:
 
 The README now explains the real request path, trust boundary, lifecycle, sharing, protection, verification, deployment and measured database tradeoffs. Its Mermaid diagram reflects the current monolith rather than an aspirational service split. Seven short ADRs capture the interview-worthy decisions, and the runbook plus capacity report cover operating and measuring the deployed system. `AGENTS.md` is canonical for every tool and `CLAUDE.md` is only its import pointer.
 
-The staging deployment and migrations now run through GitHub Actions. Final documentation verification remains open until the public Preview setting and corrected smoke check are verified. Capacity figures remain open until the dedicated load run happens.
+The staging deployment and migrations run through GitHub Actions. The README, ADRs, runbook and scope now describe the public Preview operating model that was verified on commit `99e23ed`. They make no custom domain, Clerk Production or Vercel Production claim. Capacity figures remain explicitly open until the dedicated load run happens.
 
 - [x] Rewrite README around the completed architecture
 
@@ -1376,7 +1378,7 @@ The staging deployment and migrations now run through GitHub Actions. Final docu
 
 - [x] Add setup/testing/deployment documentation
 
-- [ ] Verify documentation matches reality
+- [x] Verify documentation matches reality
 
 - [x] Prepare concise project explanation for interviews
 
@@ -1429,3 +1431,7 @@ At that point, stop expanding LLM Arena merely to keep working on it.
 The goal is not to turn one portfolio project into every backend system imaginable.
 
 The goal is to finish one focused AI + Backend system deeply enough that every important architectural decision can be defended.
+
+## Final closure status (2026-08-28)
+
+V2 engineering hardening is complete except for the official dedicated Preview capacity baseline and the manual GitHub `main` branch protection setting. Active feature development stops here. Further work is intentionally limited to supplying the load environment inputs, recording that measurement, enabling required checks and future maintenance for the documented technical debt.

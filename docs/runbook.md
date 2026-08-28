@@ -2,7 +2,7 @@
 
 ## Implemented and used now: portfolio Preview
 
-GitHub Actions owns the deployment pipeline. The chosen operating target is a public Vercel Preview on a `*.vercel.app` URL. It uses isolated staging services and Clerk development or test credentials. The current Preview becomes the public portfolio deployment once Vercel Authentication is disabled and the corrected smoke check passes. There is no required custom domain, Clerk Production instance or Vercel Production deployment.
+GitHub Actions owns the deployment pipeline. The chosen operating target is a public Vercel Preview on a `*.vercel.app` URL. It uses isolated staging services and Clerk development or test credentials. Vercel Authentication is disabled for the public Preview, and the deployment workflow requires the protected health route to return exactly `{"status":"ok"}`. There is no required custom domain, Clerk Production instance or Vercel Production deployment.
 
 Disable Vercel Git deployments so GitHub Actions remains the only deployment owner. In Vercel Project Settings, disable Vercel Authentication for Preview deployments so the portfolio URL is publicly reachable. Protect `main` in GitHub and require these six CI checks before merge:
 
@@ -33,6 +33,8 @@ Configure these values for the Vercel Preview environment only:
 - `HEALTHCHECK_SECRET`, matching the GitHub Preview environment secret
 
 Load testing adds `LOAD_TEST_MODE`, `LOAD_TEST_SECRET` and `OPENROUTER_CHAT_URL` only on its dedicated Preview. Do not enable those values on the normal portfolio Preview.
+
+The official capacity run also needs a public seeded share path, three mock model IDs and saved Clerk staging session tokens supplied outside the repository. The exact inputs and command are listed in `docs/capacity.md`.
 
 After CI succeeds, the deployment workflow checks out the exact passing commit, pulls Vercel Preview configuration, applies migrations with `prisma migrate deploy`, builds a prebuilt artifact with the pinned CLI and deploys it. The final smoke check calls `/api/health` with the bearer secret and requires the exact `{"status":"ok"}` response.
 

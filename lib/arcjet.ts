@@ -23,8 +23,8 @@ export const aj = arcjet({
     shield({ mode: "LIVE" }),
     detectBot({ mode: "LIVE", allow: [] }),
     detectPromptInjection({ mode: "LIVE" }),
-    // Every thread is public by link with no unshare path, so a card number
-    // typed into a prompt would be permanently public. Card numbers only —
+    // A thread may later be shared by its owner, so a card number typed into a
+    // prompt could be exposed through that capability URL. Card numbers only —
     // denying emails and phone numbers would reject legitimate prompts
     // (docs/scope.md Feature 10). Detected locally by the bundled WASM engine.
     sensitiveInfo({ mode: "LIVE", deny: ["CREDIT_CARD_NUMBER"] }),
@@ -45,8 +45,8 @@ export const ajActions = arcjet({
   ],
 });
 
-// Applied in app/arena/[threadId]/page.tsx. Public thread sharing made that
-// page an unauthenticated database read that anyone holding a link can hammer.
+// Applied in app/share/[token]/page.tsx. Public thread sharing creates an
+// unauthenticated database read that anyone holding an active link can hammer.
 // No `userId` characteristic — visitors are anonymous, so this keys by IP, and
 // the budget is deliberately generous because a whole office behind one NAT
 // shares a key. No detectBot here on purpose: `allow: []` would block the
