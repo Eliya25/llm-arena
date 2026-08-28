@@ -6,7 +6,7 @@ import posthog from "posthog-js";
 import { useClerk, useUser } from "@clerk/nextjs";
 import { RotateCcw, Trophy } from "lucide-react";
 import { cn } from "@/lib/utils";
-import type { CatalogModel } from "@/lib/openrouter";
+import { selectDefaultModelIds, type CatalogModel } from "@/lib/openrouter";
 import { castVote } from "@/app/arena/actions";
 import { useNewChat } from "@/components/app-shell/new-chat-context";
 import { useThreads } from "@/components/app-shell/threads-context";
@@ -173,7 +173,7 @@ export function ArenaClient({
   const { resetRef } = useNewChat();
 
   const [selectedIds, setSelectedIds] = useState<string[]>(() =>
-    catalog.slice(0, MAX_SELECTED_MODELS).map((model) => model.id),
+    selectDefaultModelIds(catalog, MAX_SELECTED_MODELS),
   );
   const [prompt, setPrompt] = useState("");
   const [threadId, setThreadId] = useState<string | null>(initialThreadId);
