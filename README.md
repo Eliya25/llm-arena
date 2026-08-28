@@ -78,7 +78,7 @@ The public portfolio demo intentionally runs as a `*.vercel.app` Preview deploym
 
 There is no active Vercel Production deployment or production alias rollback workflow. Those would be separate future operating decisions if the project ever moved beyond its portfolio deployment model.
 
-Repository settings and required secrets are listed in [the operations runbook](docs/runbook.md). Capacity methodology and measured results live in [the capacity report](docs/capacity.md).
+Repository settings and required secrets are listed in [the operations runbook](docs/runbook.md). The measured capacity baseline is intentionally conservative: the dedicated Hobby Preview completed one three-stream turn correctly, but exceeded the chosen latency budget at concurrency 1, so no higher capacity is claimed. Methodology and exact results live in [the capacity report](docs/capacity.md).
 
 ## Important tradeoffs
 

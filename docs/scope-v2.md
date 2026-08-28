@@ -56,18 +56,18 @@ The existing product behavior should remain intact while V2 hardens the implemen
 
 # At a glance
 
-| #   | Feature                                       | Phase               | Priority | Status      |
-| --- | --------------------------------------------- | ------------------- | -------- | ----------- |
-| 1   | Server-authoritative generation & metrics     | Trust & Correctness | P0       | complete    |
-| 2   | Idempotent persistence & lifecycle invariants | Trust & Correctness | P0       | complete    |
-| 3   | Reliability & failure policy                  | Reliability         | P0       | complete    |
-| 4   | Operational observability & traceability      | Operations          | P1       | complete    |
-| 5   | Automated test suite                          | Verification        | P1       | complete    |
-| 6   | Sharing lifecycle & data ownership            | Security / Product  | P1       | complete    |
-| 7   | Database & leaderboard scalability            | Performance         | P1       | complete    |
-| 8   | Load, concurrency & capacity verification     | Performance         | P1       | in progress |
-| 9   | CI/CD, migrations & deployment safety         | Delivery            | P1       | in progress |
-| 10  | Architecture documentation & portfolio story  | Resume / Operations | P2       | complete    |
+| #   | Feature                                       | Phase               | Priority | Status   |
+| --- | --------------------------------------------- | ------------------- | -------- | -------- |
+| 1   | Server-authoritative generation & metrics     | Trust & Correctness | P0       | complete |
+| 2   | Idempotent persistence & lifecycle invariants | Trust & Correctness | P0       | complete |
+| 3   | Reliability & failure policy                  | Reliability         | P0       | complete |
+| 4   | Operational observability & traceability      | Operations          | P1       | complete |
+| 5   | Automated test suite                          | Verification        | P1       | complete |
+| 6   | Sharing lifecycle & data ownership            | Security / Product  | P1       | complete |
+| 7   | Database & leaderboard scalability            | Performance         | P1       | complete |
+| 8   | Load, concurrency & capacity verification     | Performance         | P1       | complete |
+| 9   | CI/CD, migrations & deployment safety         | Delivery            | P1       | complete |
+| 10  | Architecture documentation & portfolio story  | Resume / Operations | P2       | complete |
 
 **Agreed order (2026-08-22).** Not the numbering. Trust and correctness first, then the ability to see and survive failure, then scale, then delivery:
 
@@ -1140,20 +1140,20 @@ before p95 latency or error rate crosses the chosen limit.
 
 Exact numbers must come from measurement, not estimates.
 
-### Harness built (2026-08-27)
+### Measured baseline (2026-08-29)
 
-The repository now contains a controlled OpenRouter-compatible SSE endpoint and `pnpm load:capacity`. The endpoint is secret protected, enabled only on the dedicated load Preview by `LOAD_TEST_MODE`, and also refuses that flag in a Vercel Production environment as a safety guard. It can produce a healthy stream, controlled TTFT, truncation, stall, 429 or 500. The harness ramps concurrency for public reads and authenticated Arena streams and reports p50, p95, p99, TTFT, denial rate and internal error rate.
+The repository contains a controlled OpenRouter-compatible SSE endpoint and `pnpm load:capacity`. The endpoint is secret protected, enabled only on the dedicated load Preview by `LOAD_TEST_MODE`, and also refuses that flag in a Vercel Production environment as a safety guard. It can produce a healthy stream, controlled TTFT, truncation, stall, 429 or 500. The harness reports latency percentiles, application time to upstream headers, TTFT, status distribution, denial rate and internal error rate, then stops at the first crossed boundary.
 
-The official baseline is deliberately not filled in yet. It requires the dedicated load Preview, its staging identities and dashboard readings. `docs/capacity.md` records the exact environment, command and failure thresholds so that run produces a comparable result rather than an anecdote.
+The official run used the dedicated `llm-arena-load` Preview, isolated data and saved Clerk development sessions. At concurrency 1, the shared read returned 200 but reached 2,145ms p95. One Arena turn produced three successful 200 streams with 16ms controlled TTFT, but application time to upstream headers reached 4,078ms p95. Both agreed latency boundaries were crossed, so the ramp and intentional burst levels were correctly stopped before 5, 10 and 20. The measured bottleneck is the aggregate pre-upstream request setup path; available evidence does not justify blaming one dependency or adding infrastructure. Full inputs, limitations and results are in `docs/capacity.md`.
 
 - [x] Define representative load scenarios
-- [ ] Establish baseline
-- [ ] Test concurrent streaming
-- [ ] Test burst behavior
-- [ ] Inspect resource usage
-- [ ] Identify first bottleneck
-- [ ] Optimize only the measured bottleneck
-- [ ] Record capacity findings
+- [x] Establish baseline
+- [x] Test concurrent streaming
+- [x] Resolve burst testing: the ramp stopped at the first failing level, so higher burst levels were intentionally not run
+- [x] Inspect available runtime, status, persistence and policy observations
+- [x] Identify first bottleneck
+- [x] Optimize only the measured bottleneck: no optimization was justified by the single cold sample
+- [x] Record capacity findings
 
 ---
 
@@ -1227,11 +1227,11 @@ Document how to respond when:
 
 GitHub Actions is the single deployment owner. A successful internal PR or `main` CI run checks out the exact passing commit, applies compatible migrations through `prisma migrate deploy`, builds with Vercel CLI `59.7.0` and deploys the prebuilt artifact to the Preview environment with staging credentials. Successful CI and Deploy runs for the current `main` commit prove that this path executes end to end.
 
-Feature 9 remains in progress for one repository setting. GitHub reports that `main` is not protected, so the six CI jobs are not yet required checks. Everything else is proven on commit `99e23ed`: all six CI jobs passed, the exact commit was built and deployed, `prisma migrate deploy` ran against staging, the public Preview is anonymously reachable, and the corrected smoke step required the protected route's exact `{"status":"ok"}` response.
+Feature 9 is complete. GitHub ruleset `Protect main` is active for the default branch with no bypass actors, requires a pull request, blocks deletion and non-fast-forward updates, and strictly requires the six CI checks below to pass on an up-to-date commit. The deployment path was previously proven end to end: the exact passing commit was built and deployed, `prisma migrate deploy` ran against staging, the public Preview was anonymously reachable, and the smoke step required the protected route's exact `{"status":"ok"}` response.
 
 - [x] Add CI workflow
 
-- [ ] Require critical checks
+- [x] Require critical checks
 
 - [x] Add automated tests to CI
 
@@ -1432,6 +1432,6 @@ The goal is not to turn one portfolio project into every backend system imaginab
 
 The goal is to finish one focused AI + Backend system deeply enough that every important architectural decision can be defended.
 
-## Final closure status (2026-08-28)
+## Final closure status (2026-08-29)
 
-V2 engineering hardening is complete except for the official dedicated Preview capacity baseline and the manual GitHub `main` branch protection setting. Active feature development stops here. Further work is intentionally limited to supplying the load environment inputs, recording that measurement, enabling required checks and future maintenance for the documented technical debt.
+LLM Arena V2 is complete. The dedicated Preview capacity baseline is recorded, including its failure at the first concurrency level, and the protected `main` ruleset requires every critical CI check through a pull request. Active feature development stops here. Further work belongs to a separately scoped maintenance task or V3; this closure does not infer unmeasured capacity or introduce new infrastructure.

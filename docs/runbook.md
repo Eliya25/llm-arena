@@ -32,9 +32,9 @@ Configure these values for the Vercel Preview environment only:
 - `OPENROUTER_API_KEY`
 - `HEALTHCHECK_SECRET`, matching the GitHub Preview environment secret
 
-Load testing adds `LOAD_TEST_MODE`, `LOAD_TEST_SECRET` and `OPENROUTER_CHAT_URL` only on its dedicated Preview. Do not enable those values on the normal portfolio Preview.
+Load testing adds `LOAD_TEST_MODE`, `LOAD_TEST_SECRET` and `OPENROUTER_CHAT_URL` only on the separate `llm-arena-load` Preview project. Do not enable those values on the normal portfolio Preview or any Production deployment.
 
-The official capacity run also needs a public seeded share path, three mock model IDs and saved Clerk staging session tokens supplied outside the repository. The exact inputs and command are listed in `docs/capacity.md`.
+The official capacity run used a public seeded share path, three mock model IDs and saved Clerk development session tokens supplied outside the repository. None of those ephemeral inputs is stored in Git. The exact method and measured result are listed in `docs/capacity.md`.
 
 After CI succeeds, the deployment workflow checks out the exact passing commit, pulls Vercel Preview configuration, applies migrations with `prisma migrate deploy`, builds a prebuilt artifact with the pinned CLI and deploys it. The final smoke check calls `/api/health` with the bearer secret and requires the exact `{"status":"ok"}` response.
 
