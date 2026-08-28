@@ -22,6 +22,30 @@ type OpenRouterModelsResponse = {
   data: OpenRouterModel[];
 };
 
+// OpenRouter lists these free variants in the public model catalog, but the
+// chat endpoint rejects them unless the caller is an approved agentic
+// harness. The catalog currently exposes no capability flag for that access
+// restriction, so keep the known incompatible variants out of the arena.
+const AGENTIC_ONLY_MODELS = new Set([
+  "thinkingmachines/inkling:free",
+  "thinkingmachines/inkling-small:free",
+]);
+
+export function isArenaCompatibleModel(model: OpenRouterModel): boolean {
+  if (AGENTIC_ONLY_MODELS.has(model.id)) return false;
+
+  const inputs = model.architecture?.input_modalities ?? [];
+  const outputs = model.architecture?.output_modalities ?? [];
+
+  return (
+    model.pricing.prompt === "0" &&
+    model.pricing.completion === "0" &&
+    inputs.includes("text") &&
+    outputs.length === 1 &&
+    outputs[0] === "text"
+  );
+}
+
 export async function getFreeModelCatalog(): Promise<CatalogModel[]> {
   try {
     const response = await fetch("https://openrouter.ai/api/v1/models", {
@@ -36,23 +60,11 @@ export async function getFreeModelCatalog(): Promise<CatalogModel[]> {
 
     return (
       data
-        .filter(
-          (model) =>
-            model.pricing.prompt === "0" && model.pricing.completion === "0",
-        )
         // Only models that take text in and produce text and nothing else.
         // Media models (e.g. music generation) list "text" among their outputs
         // too, so the output list must be exactly ["text"] — otherwise they'd
         // land in the arena and fail every chat prompt.
-        .filter((model) => {
-          const inputs = model.architecture?.input_modalities ?? [];
-          const outputs = model.architecture?.output_modalities ?? [];
-          return (
-            inputs.includes("text") &&
-            outputs.length === 1 &&
-            outputs[0] === "text"
-          );
-        })
+        .filter(isArenaCompatibleModel)
         .map((model) => ({
           id: model.id,
           // Every model here is free — the "(free)" suffix is noise on chips.
