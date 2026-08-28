@@ -16,7 +16,7 @@ One prompt fans out to up to three independent model streams. The server owns pe
 
 ## Stack
 
-TypeScript on Node 20, Next.js 16 App Router, React 19, PostgreSQL with Prisma 7, Clerk, OpenRouter, Arcjet, PostHog, Tailwind CSS 4 and Vitest. Use pnpm 11.
+TypeScript on Node 24, Next.js 16 App Router, React 19, PostgreSQL with Prisma 7, Clerk, OpenRouter, Arcjet, PostHog, Tailwind CSS 4 and Vitest. Use pnpm 11.
 
 ## Commands
 

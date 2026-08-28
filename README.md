@@ -42,7 +42,7 @@ Next.js 16 App Router, React 19, TypeScript, PostgreSQL, Prisma 7, Clerk, OpenRo
 
 ## Local setup
 
-Use Node 20 or newer and pnpm 11.
+Use Node 24 and pnpm 11.
 
 ```bash
 pnpm install

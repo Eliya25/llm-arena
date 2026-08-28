@@ -26,7 +26,7 @@ jobs:
       - uses: pnpm/action-setup@v4
         with: { version: 11.20.0 }
       - uses: actions/setup-node@v4
-        with: { node-version: 20, cache: pnpm }
+        with: { node-version: 24, cache: pnpm }
       - run: pnpm install --frozen-lockfile
       - name: Pull preview configuration
         run: pnpm dlx vercel@59.7.0 pull --yes --environment=preview --token="$VERCEL_TOKEN"
@@ -64,7 +64,7 @@ jobs:
       - uses: pnpm/action-setup@v4
         with: { version: 11.20.0 }
       - uses: actions/setup-node@v4
-        with: { node-version: 20, cache: pnpm }
+        with: { node-version: 24, cache: pnpm }
       - run: pnpm install --frozen-lockfile
       - name: Pull production configuration
         run: pnpm dlx vercel@59.7.0 pull --yes --environment=production --token="$VERCEL_TOKEN"
