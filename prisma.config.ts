@@ -2,6 +2,7 @@
 // npm install --save-dev prisma dotenv
 import { config } from "dotenv";
 import { defineConfig } from "prisma/config";
+import { pinPostgresSslMode } from "./lib/database-url";
 
 // This project keeps real secrets in .env.local (see docs/scope.md Feature 1),
 // not the default .env that bare `dotenv/config` would load.
@@ -13,6 +14,8 @@ export default defineConfig({
     path: "prisma/migrations",
   },
   datasource: {
-    url: process.env["DATABASE_URL"],
+    url: process.env["DATABASE_URL"]
+      ? pinPostgresSslMode(process.env["DATABASE_URL"])
+      : undefined,
   },
 });

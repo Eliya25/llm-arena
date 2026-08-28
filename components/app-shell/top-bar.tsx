@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import { Check, Link2, PanelLeft } from "lucide-react";
+import { PanelLeft } from "lucide-react";
+import { ShareDialog } from "./share-dialog";
 
 export type ModelBadge = {
   id: string;
@@ -15,50 +15,14 @@ type TopBarProps = {
   onToggleSidebar: () => void;
   breadcrumb: string;
   models: ModelBadge[];
-  showCopyLink?: boolean;
+  threadControls?: { threadId: string; initiallyShared: boolean };
 };
-
-function CopyLinkButton() {
-  const [copied, setCopied] = useState(false);
-  const resetTimer = useRef<ReturnType<typeof setTimeout> | undefined>(
-    undefined,
-  );
-
-  useEffect(() => () => clearTimeout(resetTimer.current), []);
-
-  async function handleCopy() {
-    try {
-      await navigator.clipboard.writeText(window.location.href);
-      setCopied(true);
-      clearTimeout(resetTimer.current);
-      resetTimer.current = setTimeout(() => setCopied(false), 2000);
-    } catch {
-      // Clipboard can be unavailable (permissions, insecure context) — the
-      // address bar still has the link, so silently doing nothing is honest.
-    }
-  }
-
-  return (
-    <button
-      type="button"
-      onClick={handleCopy}
-      className="flex shrink-0 items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-xs font-medium hover:bg-accent"
-    >
-      {copied ? (
-        <Check className="h-3.5 w-3.5" aria-hidden />
-      ) : (
-        <Link2 className="h-3.5 w-3.5" aria-hidden />
-      )}
-      <span aria-live="polite">{copied ? "Copied" : "Copy link"}</span>
-    </button>
-  );
-}
 
 export function TopBar({
   onToggleSidebar,
   breadcrumb,
   models,
-  showCopyLink = false,
+  threadControls,
 }: TopBarProps) {
   return (
     <header className="flex h-16 shrink-0 items-center gap-3 border-b border-border/80 bg-background/80 px-4 backdrop-blur-xl sm:px-5">
@@ -95,7 +59,7 @@ export function TopBar({
             </span>
           </span>
         ))}
-        {showCopyLink && <CopyLinkButton />}
+        {threadControls && <ShareDialog {...threadControls} />}
       </div>
     </header>
   );

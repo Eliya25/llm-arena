@@ -12,6 +12,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:unit": "vitest run --project unit",
+    "test:db": "vitest run --project database",
+    "load:capacity": "node scripts/load-capacity.mjs",
     "prepare": "husky"
   },
   "dependencies": {

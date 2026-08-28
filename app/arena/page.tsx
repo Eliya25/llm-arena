@@ -3,6 +3,8 @@ import { ArenaClient } from "@/components/arena/arena-client";
 import { getFreeModelCatalog } from "@/lib/openrouter";
 import { getOwnThreads } from "./actions";
 
+export const dynamic = "force-dynamic";
+
 export default async function ArenaPage() {
   const [catalog, threads] = await Promise.all([
     getFreeModelCatalog(),

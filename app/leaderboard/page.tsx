@@ -7,6 +7,8 @@ import {
 import { getFreeModelCatalog } from "@/lib/openrouter";
 import { getLeaderboards, type LeaderboardRow } from "./leaderboard-data";
 
+export const dynamic = "force-dynamic";
+
 export default async function LeaderboardPage() {
   const [{ global, personal }, catalog, threads] = await Promise.all([
     getLeaderboards(),

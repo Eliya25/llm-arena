@@ -10,6 +10,7 @@ import {
   worthRetrying,
 } from "@/lib/failure";
 import { track } from "@/lib/analytics";
+import { resolveUpstreamUrl } from "@/lib/upstream-url";
 import {
   describeCause,
   log,
@@ -78,17 +79,21 @@ function withFinalFrame(result: Promise<AnswerResult | null>) {
 // models are busy often enough that retrying them would make a slow lane out
 // of an already-failed one.
 async function callUpstream(
+  upstreamUrl: string,
   model: string,
   messages: readonly { role: string; content: string }[],
   signal: AbortSignal,
   trace: Correlation,
 ): Promise<Response | null> {
   const attempt = () =>
-    fetch("https://openrouter.ai/api/v1/chat/completions", {
+    fetch(upstreamUrl, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${env.OPENROUTER_API_KEY}`,
         "Content-Type": "application/json",
+        ...(env.LOAD_TEST_MODE && env.LOAD_TEST_SECRET
+          ? { "X-Load-Test-Secret": env.LOAD_TEST_SECRET }
+          : {}),
       },
       body: JSON.stringify({
         model,
@@ -312,6 +317,7 @@ export async function POST(request: NextRequest) {
   armWatchdog(false);
 
   const upstream = await callUpstream(
+    resolveUpstreamUrl(env.OPENROUTER_CHAT_URL, request.url),
     model,
     messages,
     upstreamAbort.signal,

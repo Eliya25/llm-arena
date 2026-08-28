@@ -2,6 +2,8 @@ import { getOwnThreads } from "@/app/arena/actions";
 import { AppShell } from "@/components/app-shell/app-shell";
 import { getFreeModelCatalog } from "@/lib/openrouter";
 
+export const dynamic = "force-dynamic";
+
 function initialFor(name: string): string {
   return name.trim().charAt(0).toUpperCase();
 }

@@ -1,0 +1,58 @@
+name: Deploy
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-preview
+  cancel-in-progress: true
+
+jobs:
+  preview:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      (github.event.workflow_run.event == 'pull_request' ||
+       (github.event.workflow_run.event == 'push' &&
+        github.event.workflow_run.head_branch == 'main')) &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-latest
+    environment: preview
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: "${{ github.event.workflow_run.head_sha }}" }
+      - uses: pnpm/action-setup@v4
+        with: { version: 11.20.0 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 24, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      - name: Pull preview configuration
+        run: pnpm dlx vercel@59.7.0 pull --yes --environment=preview --token="$VERCEL_TOKEN"
+        env: &preview-secrets
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+      - name: Generate Prisma client
+        run: pnpm prisma generate
+        env:
+          DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
+      - name: Apply compatible staging migrations
+        run: pnpm prisma migrate deploy
+        env:
+          DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
+      - run: pnpm dlx vercel@59.7.0 build --token="$VERCEL_TOKEN"
+        env: *preview-secrets
+      - id: deploy
+        run: echo "url=$(pnpm dlx vercel@59.7.0 deploy --prebuilt --token="$VERCEL_TOKEN")" >> "$GITHUB_OUTPUT"
+        env: *preview-secrets
+      - name: Smoke check preview
+        run: >-
+          curl --fail --retry 5 --retry-delay 3
+          -H "Authorization: Bearer $HEALTHCHECK_SECRET"
+          "${{ steps.deploy.outputs.url }}/api/health"
+        env:
+          HEALTHCHECK_SECRET: ${{ secrets.HEALTHCHECK_SECRET }}

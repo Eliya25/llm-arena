@@ -11,7 +11,7 @@ type AppShellProps = {
   breadcrumb: string;
   models?: ModelBadge[];
   threads?: ThreadListItem[];
-  showCopyLink?: boolean;
+  threadControls?: { threadId: string; initiallyShared: boolean };
   children: React.ReactNode;
 };
 
@@ -19,7 +19,7 @@ export function AppShell({
   breadcrumb,
   models = [],
   threads = [],
-  showCopyLink = false,
+  threadControls,
   children,
 }: AppShellProps) {
   const [collapsed, setCollapsed] = useState(false);
@@ -33,7 +33,7 @@ export function AppShell({
             <TopBar
               breadcrumb={breadcrumb}
               models={models}
-              showCopyLink={showCopyLink}
+              threadControls={threadControls}
               onToggleSidebar={() => setCollapsed((value) => !value)}
             />
             <main className="relative flex-1 overflow-y-auto">
