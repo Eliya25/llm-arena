@@ -20,5 +20,3 @@ This area provides deterministic OpenRouter compatible behavior for capacity tes
 ## Related documentation
 
 See `docs/capacity.md` for environment setup, thresholds and the run command.
-
-_Drafted by /sync from the introducing change, worth a quick human pass._

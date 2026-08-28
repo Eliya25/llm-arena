@@ -28,7 +28,7 @@ browser ──POST /api/chat {model, prompt}──▶ route handler ──POST s
 | `429`  | Arcjet rate limit                                          | "You're sending requests too quickly. Please slow down."                                             |
 | `502`  | OpenRouter request fails or returns no body                | "The model didn't respond. Please try again."                                                        |
 
-Every denial/failure path logs the real reason server-side (`console.error`) before returning the plain message — nothing raw ever reaches the client, per `CLAUDE.md`'s error-handling rule.
+Every denial/failure path logs the real reason server-side (`console.error`) before returning the plain message — nothing raw ever reaches the client, per `AGENTS.md`'s error-handling rule.
 
 ## Gate order inside the handler
 

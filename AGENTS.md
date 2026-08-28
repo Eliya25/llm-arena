@@ -50,7 +50,7 @@ Before building a feature, state what you are doing and why, then wait for appro
 
 ## Design
 
-The visual system is recorded in `docs/scope.md`. Any UI work uses the installed `frontend-design` skill before implementation and extends the existing coffee, parchment and rust identity.
+The visual system is recorded in `docs/scope.md`. Any UI work extends the existing coffee, parchment and rust identity.
 
 ## Delivery
 

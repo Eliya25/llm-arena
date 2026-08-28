@@ -1,6 +1,6 @@
 # Manual pass
 
-The flows a person has to look at. This list exists because `CLAUDE.md` keeps
+The flows a person has to look at. This list exists because `AGENTS.md` keeps
 the ban on browser automation — a screen is verified by looking at it — and
 "look at it" only stays honest if it means the same thing every time.
 

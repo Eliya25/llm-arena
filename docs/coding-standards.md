@@ -1,6 +1,6 @@
 # Coding standards & tooling
 
-Concrete, checkable version of the Rules section in `CLAUDE.md`. If something here and `CLAUDE.md` ever disagree, `CLAUDE.md` wins — fix this doc, don't quietly follow it.
+Concrete, checkable version of the Rules section in `AGENTS.md`. If something here and `AGENTS.md` ever disagree, `AGENTS.md` wins — fix this doc, don't quietly follow it.
 
 ## Tools
 
@@ -19,7 +19,7 @@ Concrete, checkable version of the Rules section in `CLAUDE.md`. If something he
 `.husky/pre-commit` runs, on every commit, in order:
 
 1. `lint-staged` — `eslint --fix` + `prettier --write` on staged JS/TS files, `prettier --write` on staged JSON/CSS/MD.
-2. `tsc --noEmit` — the **whole project**, not just staged files. Deliberate: a commit that only touches one file can still break a type elsewhere (a changed export, a removed field), and CLAUDE.md's "actually run it" rule means that has to be caught before it lands, not after.
+2. `tsc --noEmit` — the **whole project**, not just staged files. Deliberate: a commit that only touches one file can still break a type elsewhere (a changed export, a removed field), and AGENTS.md's "actually run it" rule means that has to be caught before it lands, not after.
 
 Either step failing blocks the commit. The hook also defensively adds `C:\Windows\System32` to `PATH` before running anything — lint-staged spawns `eslint.cmd`/`prettier.cmd` through `cmd.exe` on Windows, and some shells (this one included) don't carry System32 on `PATH` by default, which makes that spawn fail outright with `ENOENT` before eslint/prettier ever run. Without this line the hook blocks every commit for the wrong reason instead of actually linting.
 
@@ -55,7 +55,7 @@ Vitest has separate unit and database projects. Unit tests cover pure behavior. 
 ## Styling
 
 - Shared values — spacing, color, repeated class combinations — live in `app/globals.css` or a shared component, never copy-pasted as raw Tailwind classes across files. Three+ files with the same handful of classes is a component, not a coincidence.
-- Every screen keeps the accessibility baseline from `CLAUDE.md`: real contrast (checked by eye, not just computed), a visible focus state on every interactive element, full keyboard operability (tab order, Enter/Space activation, no mouse-only affordances).
+- Every screen keeps the accessibility baseline from `AGENTS.md`: real contrast (checked by eye, not just computed), a visible focus state on every interactive element, full keyboard operability (tab order, Enter/Space activation, no mouse-only affordances).
 
 ## Imports
 

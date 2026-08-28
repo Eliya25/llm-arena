@@ -36,7 +36,7 @@ export type FailureKind =
 export type Failure = {
   readonly kind: FailureKind;
   // The sentence a person sees. Plain, and never an exception or a provider
-  // string (CLAUDE.md).
+  // string (AGENTS.md).
   readonly message: string;
   readonly status: number;
   // Whether trying the identical operation again could plausibly work. It
