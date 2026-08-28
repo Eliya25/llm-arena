@@ -31,7 +31,7 @@ describe("what a person is told", () => {
   });
 
   it("never leaks the vocabulary of the machine", () => {
-    // CLAUDE.md: never a raw exception or provider error. These are the words
+    // AGENTS.md: never a raw exception or provider error. These are the words
     // that would mean one had slipped through.
     const leaks =
       /error:|exception|stack|undefined|null|prisma|postgres|arcjet|clerk|posthog|openrouter|5\d\d|4\d\d/i;
